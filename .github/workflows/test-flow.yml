@@ -20,7 +20,7 @@ on:
         default: "128k"
       max_bitrate:
         description: "Safety Maxrate (0 = off, e.g. 800k)"
-        default: "800k"
+        default: "0"
       film_grain:
         description: "Film Grain Synthesis (0-50). Use 4-8 for grainy sources."
         default: "0"
@@ -32,13 +32,13 @@ on:
         default: "false"
       strip_attachments:
         description: "Strip font attachments (true/false)"
-        default: "true"
+        default: "false"
       sample_start:
         description: "Start Time in seconds (e.g. 120)"
         default: "0"
       sample_duration:
         description: "Duration in seconds (0 = Full encode)"
-        default: "60"
+        default: "0"
 
 jobs:
   encode:
