@@ -31,34 +31,33 @@ async def main():
     final_crf = config.USER_CRF if (config.USER_CRF and config.USER_CRF.strip()) else def_crf
     final_preset = config.USER_PRESET if (config.USER_PRESET and config.USER_PRESET.strip()) else def_preset
     
-    try: grain_val = int(config.USER_GRAIN)
-    except: grain_val = 0
-    
-    res_label = config.USER_RES if config.USER_RES else f"{height}p"
-    hdr_label = "HDR10" if is_hdr else "SDR"
-    grain_label = f" | Grain: {grain_val}" if grain_val > 0 else ""
-    
+    # Resolution Setup
+    res_label = config.USER_RES if config.USER_RES else "1080"
     crop_val = get_crop_params(duration)
     
-    # Video Filter Chain
+    # -- VIDEO FILTERS --
     vf_filters = []
+    # 1. Denoise (Requested)
+    vf_filters.append("hqdn3d=1.5:1.2:3:3")
+    # 2. Crop (Smart Detection)
     if crop_val: vf_filters.append(f"crop={crop_val}")
-    if config.USER_RES: vf_filters.append(f"scale=-2:{config.USER_RES}")
-    video_filters = ["-vf", ",".join(vf_filters)] if vf_filters else []
+    # 3. Scale (Requested: scale=-1:1080/Res)
+    vf_filters.append(f"scale=-1:{res_label}")
     
-    # Audio Fix: Use aformat to prevent encoder crash on 5.1(side) vs Stereo
-    if channels == 0: 
-        audio_cmd = []
-    elif config.AUDIO_MODE == "opus":
-        calc_bitrate = config.AUDIO_BITRATE if channels <= 2 else "256k"
-        audio_cmd = ["-c:a", "libopus", "-b:a", calc_bitrate, "-af", "aformat=channel_layouts=7.1|5.1|stereo"]
-    else: 
-        audio_cmd = ["-c:a", "copy"]
+    video_filters = ["-vf", ",".join(vf_filters)]
 
-    # SVT-AV1 Fix: Modern syntax (removed enable-tpl-la=1)
-    hdr_params = ":enable-hdr=1" if is_hdr else ""
-    grain_params = f":film-grain={grain_val}:film-grain-denoise=0" if grain_val > 0 else ""
-    svtav1_tune = f"tune=0:aq-mode=2:enable-overlays=1:scd=1:tile-columns=1{hdr_params}{grain_params}"
+    # -- AUDIO CONFIGURATION --
+    # Requested: -c:a libopus -b:a 32k -vbr on
+    audio_cmd = ["-c:a", "libopus", "-b:a", "32k", "-vbr", "on"]
+    final_audio_bitrate = "32k" # For UI display
+
+    # -- SVT-AV1 PARAMETERS --
+    # Requested: tune=0:film-grain=0:enable-tpl-la=1:enable-overlays=1:aq-mode=1
+    svtav1_tune = "tune=0:film-grain=0:enable-tpl-la=1:enable-overlays=1:aq-mode=1"
+
+    # UI Labels
+    hdr_label = "HDR10" if is_hdr else "SDR"
+    grain_label = " | Grain: 0" # Forced 0 by params
 
     # 4. TELEGRAM UPLINK INITIALIZATION
     async with Client(config.SESSION_NAME, api_id=config.API_ID, api_hash=config.API_HASH, bot_token=config.BOT_TOKEN) as app:
@@ -70,14 +69,21 @@ async def main():
 
         # 5. ENCODING EXECUTION
         cmd = [
-            "ffmpeg", "-i", config.SOURCE, "-map", "0:v:0", "-map", "0:a?", "-map", "0:s?",
+            "ffmpeg", "-i", config.SOURCE, 
+            "-map", "0",              # Map all streams
             *video_filters,
-            "-c:v", "libsvtav1", "-pix_fmt", "yuv420p10le",
-            "-crf", str(final_crf), "-preset", str(final_preset),
+            "-c:v", "libsvtav1", 
+            "-pix_fmt", "yuv420p10le",
+            "-crf", str(final_crf), 
+            "-preset", str(final_preset),
             "-svtav1-params", svtav1_tune,
             "-threads", "0",
-            *audio_cmd, "-c:s", "copy",
-            "-progress", "pipe:1", "-nostats", "-y", config.FILE_NAME
+            *audio_cmd, 
+            "-c:s", "copy",           # Copy subtitles
+            "-map_chapters", "0",     # Map chapters
+            "-progress", "pipe:1", 
+            "-nostats", 
+            "-y", config.FILE_NAME
         ]
 
         start_time, last_update = time.time(), 0
@@ -98,7 +104,8 @@ async def main():
                         if time.time() - last_update > 8:
                             size = os.path.getsize(config.FILE_NAME)/(1024*1024) if os.path.exists(config.FILE_NAME) else 0
                             crop_label_txt = f" | Cropped" if crop_val else ""
-                            scifi_ui = get_encode_ui(config.FILE_NAME, speed, fps, elapsed, eta, curr_sec, duration, percent, final_crf, final_preset, res_label, crop_label_txt, hdr_label, grain_label, config.AUDIO_MODE, config.AUDIO_BITRATE, size)
+                            # Updated UI call with fixed bitrate label
+                            scifi_ui = get_encode_ui(config.FILE_NAME, speed, fps, elapsed, eta, curr_sec, duration, percent, final_crf, final_preset, res_label, crop_label_txt, hdr_label, grain_label, config.AUDIO_MODE, final_audio_bitrate, size)
                             try:
                                 await app.edit_message_text(config.CHAT_ID, status.id, scifi_ui, parse_mode=enums.ParseMode.HTML)
                                 last_update = time.time()
@@ -116,9 +123,9 @@ async def main():
             return
 
         # 7. POST-PROCESSING (Remux)
+        # We run this to ensure clean seeking and container integrity, even though ffmpeg mapped chapters
         await app.edit_message_text(config.CHAT_ID, status.id, "🛠️ <b>[ SYSTEM.OPTIMIZE ] Finalizing Metadata...</b>", parse_mode=enums.ParseMode.HTML)
         fixed_file = f"FIXED_{config.FILE_NAME}"
-        # Remux to restore chapters/global metadata from source
         subprocess.run(["mkvmerge", "-o", fixed_file, config.FILE_NAME, "--no-video", "--no-audio", "--no-subtitles", config.SOURCE])
         if os.path.exists(fixed_file):
             os.remove(config.FILE_NAME)
@@ -157,7 +164,7 @@ async def main():
             f"🛠 <b>SPECS:</b>\n"
             f"└ <b>Preset:</b> {final_preset} | <b>CRF:</b> {final_crf}\n"
             f"└ <b>Video:</b> {res_label}{crop_label_report} | {hdr_label}{grain_label}\n"
-            f"└ <b>Audio:</b> {config.AUDIO_MODE.upper()} @ {config.AUDIO_BITRATE}"
+            f"└ <b>Audio:</b> {config.AUDIO_MODE.upper()} @ {final_audio_bitrate}"
         )
 
         await app.edit_message_text(config.CHAT_ID, status.id, "🚀 <b>[ SYSTEM.UPLINK ] Transmitting Final Video...</b>", parse_mode=enums.ParseMode.HTML)
