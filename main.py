@@ -44,7 +44,8 @@ async def main():
     # 3. Scale (Requested: scale=-1:1080/Res)
     vf_filters.append(f"scale=-1:{res_label}")
     
-    video_filters = ["-vf", ",".join(vf_filters)]
+    # FIX 1: Use -filter:V (capital V) to apply filters only to real video streams, ignoring cover art
+    video_filters = ["-filter:V", ",".join(vf_filters)]
 
     # -- AUDIO CONFIGURATION --
     # Requested: -c:a libopus -b:a 32k -vbr on
@@ -52,8 +53,8 @@ async def main():
     final_audio_bitrate = "32k" # For UI display
 
     # -- SVT-AV1 PARAMETERS --
-    # Requested: tune=0:film-grain=0:enable-tpl-la=1:enable-overlays=1:aq-mode=1
-    svtav1_tune = "tune=0:film-grain=0:enable-tpl-la=1:enable-overlays=1:aq-mode=1"
+    # FIX 2: Removed 'enable-tpl-la=1' as it is deprecated in SVT-AV1 v2+ and crashes in v4+
+    svtav1_tune = "tune=0:film-grain=0:enable-overlays=1:aq-mode=1"
 
     # UI Labels
     hdr_label = "HDR10" if is_hdr else "SDR"
@@ -71,15 +72,15 @@ async def main():
         cmd = [
             "ffmpeg", "-i", config.SOURCE, 
             "-map", "0",              # Map all streams
+            "-c", "copy",             # FIX 3: Copy all streams by default (saves cover arts, fonts, and subs untouched)
             *video_filters,
-            "-c:v", "libsvtav1", 
-            "-pix_fmt", "yuv420p10le",
+            "-c:V", "libsvtav1",      # FIX 4: Use :V (capital) to specifically encode only main video, bypassing MJPEG images
+            "-pix_fmt:V", "yuv420p10le",
             "-crf", str(final_crf), 
             "-preset", str(final_preset),
             "-svtav1-params", svtav1_tune,
             "-threads", "0",
-            *audio_cmd, 
-            "-c:s", "copy",           # Copy subtitles
+            *audio_cmd,               # Overrides -c copy for audio 
             "-map_chapters", "0",     # Map chapters
             "-progress", "pipe:1", 
             "-nostats", 
