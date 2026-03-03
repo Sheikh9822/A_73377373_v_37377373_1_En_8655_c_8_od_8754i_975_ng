@@ -1,9 +1,9 @@
-name: Cleanup Workflow Runs
+name: Cleanup Workflow Runs (Keep Latest 100)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 3 * * *'   # Runs daily at 3 AM UTC
+    - cron: '0 3 * * *'   # Daily at 3AM UTC
 
 permissions:
   actions: write
@@ -14,18 +14,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Delete old workflow runs
+      - name: Delete old workflow runs (keep latest 100)
         uses: actions/github-script@v7
         with:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
+            const keepRuns = 100;
 
-            const daysOld = 3; // Change retention days here
-            const cutoff = new Date();
-            cutoff.setDate(cutoff.getDate() - daysOld);
-
-            console.log(`Deleting workflow runs older than ${daysOld} days`);
+            console.log(`Keeping latest ${keepRuns} runs per workflow`);
 
             const workflows = await github.rest.actions.listRepoWorkflows({
               owner,
@@ -33,24 +30,40 @@ jobs:
             });
 
             for (const workflow of workflows.data.workflows) {
-              const runs = await github.rest.actions.listWorkflowRuns({
-                owner,
-                repo,
-                workflow_id: workflow.id,
-                per_page: 100,
-              });
+              console.log(`Checking workflow: ${workflow.name}`);
 
-              for (const run of runs.data.workflow_runs) {
-                const createdAt = new Date(run.created_at);
+              let page = 1;
+              let allRuns = [];
 
-                if (createdAt < cutoff) {
-                  console.log(`Deleting run ${run.id} (${workflow.name})`);
-                  await github.rest.actions.deleteWorkflowRun({
-                    owner,
-                    repo,
-                    run_id: run.id,
-                  });
-                }
+              while (true) {
+                const runs = await github.rest.actions.listWorkflowRuns({
+                  owner,
+                  repo,
+                  workflow_id: workflow.id,
+                  per_page: 100,
+                  page: page,
+                });
+
+                if (runs.data.workflow_runs.length === 0) break;
+
+                allRuns.push(...runs.data.workflow_runs);
+                page++;
+              }
+
+              if (allRuns.length <= keepRuns) {
+                console.log(`No runs to delete for ${workflow.name}`);
+                continue;
+              }
+
+              const runsToDelete = allRuns.slice(keepRuns);
+
+              for (const run of runsToDelete) {
+                console.log(`Deleting run ${run.id}`);
+                await github.rest.actions.deleteWorkflowRun({
+                  owner,
+                  repo,
+                  run_id: run.id,
+                });
               }
             }
 
