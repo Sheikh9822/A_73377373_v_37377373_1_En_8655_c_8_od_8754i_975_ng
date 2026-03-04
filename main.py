@@ -46,7 +46,7 @@ async def main():
     video_filters = ["-vf", ",".join(vf_filters)]
 
     # -- AUDIO CONFIGURATION --
-    audio_cmd           = ["-c:a", "libopus", "-b:a", "32k", "-vbr", "on", "-mapping_family", "1"]
+    audio_cmd           = ["-c:a", "libopus", "-b:a", "32k", "-vbr", "on", "-mapping_family", "255"]
     final_audio_bitrate = "32k"
 
     # -- SVT-AV1 PARAMETERS --
