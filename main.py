@@ -15,97 +15,100 @@ from ui import get_encode_ui, format_time, upload_progress, get_failure_ui
 
 
 # ---------------------------------------------------------------------------
-# KV HELPERS
-# On-demand only — main.py NEVER writes to KV on a timer.
-# Instead it polls for a poll_request flag every 5s (cheap GET).
-# The Worker sets the flag when /p is sent; main.py writes once and stops.
-# Daily KV ops: ~25,920 reads (poll checks) + ~120 writes (per 10 /p calls)
+# KV FLAG CHECKER
+# main.py never writes to KV. It only checks for a poll_request flag (GET).
+# When the flag is found, main.py sends a TG message directly and deletes
+# the flag. The Worker only ever does 1 KV write per /p call.
+#
+# Daily KV reads: 12 encodes × poll every 5s × 3h = ~25,920 reads
+# Daily KV writes: 0 from main.py. Only from Worker when /p is sent.
 # ---------------------------------------------------------------------------
-
-def _kv_url(key, ttl=None):
-    base = (
-        f"https://api.cloudflare.com/client/v4/accounts/{config.CF_ACCOUNT_ID}"
-        f"/storage/kv/namespaces/{config.CF_KV_NAMESPACE_ID}/values/{key}"
-    )
-    return base + (f"?expiration_ttl={ttl}" if ttl else "")
-
-
-def _kv_headers():
-    return {
-        "Authorization": f"Bearer {config.CF_KV_TOKEN}",
-        "Content-Type": "application/json",
-    }
-
 
 def _kv_configured():
     return all([config.CF_ACCOUNT_ID, config.CF_KV_NAMESPACE_ID, config.CF_KV_TOKEN])
 
 
-def _kv_check_poll():
+def _kv_headers():
+    return {"Authorization": f"Bearer {config.CF_KV_TOKEN}"}
+
+
+def _kv_base():
+    return (
+        f"https://api.cloudflare.com/client/v4/accounts/{config.CF_ACCOUNT_ID}"
+        f"/storage/kv/namespaces/{config.CF_KV_NAMESPACE_ID}/values"
+    )
+
+
+def _kv_poll_check_and_clear():
     """
-    Returns True if the Worker has set a poll_request flag in KV.
-    Fast 404 when no /p is pending — barely any latency on the encode loop.
+    Checks for poll_request flag in KV.
+    If found: deletes it immediately (so only one encode handles it) and returns True.
+    If not found (404): returns False.
+    All other errors: returns False silently.
     """
     if not _kv_configured():
         return False
-    req = urllib.request.Request(
-        _kv_url("poll_request"), method="GET", headers=_kv_headers()
-    )
     try:
-        urllib.request.urlopen(req, timeout=3)
-        return True   # HTTP 200 — flag present
+        # GET the flag
+        get_req = urllib.request.Request(
+            f"{_kv_base()}/poll_request",
+            method="GET",
+            headers=_kv_headers()
+        )
+        urllib.request.urlopen(get_req, timeout=3)
+        # Flag exists — delete it immediately so other encodes don't also fire
+        del_req = urllib.request.Request(
+            f"{_kv_base()}/poll_request",
+            method="DELETE",
+            headers=_kv_headers()
+        )
+        urllib.request.urlopen(del_req, timeout=3)
+        return True
     except urllib.error.HTTPError:
-        return False  # HTTP 404 — no pending poll
+        return False  # 404 = no flag, expected most of the time
     except Exception:
         return False
 
 
-def _kv_put(payload: dict):
-    """Writes progress snapshot. Called only when poll_request flag is detected."""
-    if not _kv_configured():
-        return
-    req = urllib.request.Request(
-        _kv_url(f"progress_{config.GITHUB_RUN_ID}", ttl=120),
-        data=json.dumps(payload).encode(),
-        method="PUT",
-        headers=_kv_headers()
-    )
+# ---------------------------------------------------------------------------
+# PROGRESS MESSAGE SENDER
+# Sends a fresh TG message with the current encode state.
+# Schedules deletion after 10s as a background task — never blocks encode loop.
+# ---------------------------------------------------------------------------
+async def send_progress_and_autodelete(app, payload: dict):
+    """Sends a progress box to TG then deletes it after 10s."""
     try:
-        urllib.request.urlopen(req, timeout=5)
+        bar_ui = get_encode_ui(
+            payload["file"],
+            payload["speed"],
+            payload["fps"],
+            payload["elapsed"],
+            payload["eta"],
+            payload["curr_sec"],
+            payload["duration"],
+            payload["percent"],
+            payload["crf"],
+            payload["preset"],
+            payload["res"],
+            payload["crop_label"],
+            payload["hdr"],
+            payload["grain_label"],
+            payload["audio"],
+            payload["abitrate"],
+            payload["size_mb"],
+        )
+        msg = await app.send_message(
+            config.CHAT_ID,
+            bar_ui,
+            parse_mode=enums.ParseMode.HTML
+        )
+        await asyncio.sleep(10)
+        try:
+            await msg.delete()
+        except Exception:
+            pass
     except Exception:
         pass
-
-
-def _kv_delete():
-    """Cleans up this run's progress key when encode ends."""
-    if not _kv_configured():
-        return
-    req = urllib.request.Request(
-        _kv_url(f"progress_{config.GITHUB_RUN_ID}"),
-        method="DELETE", headers=_kv_headers()
-    )
-    try:
-        urllib.request.urlopen(req, timeout=5)
-    except Exception:
-        pass
-
-
-async def write_progress(loop, payload: dict):
-    await loop.run_in_executor(None, _kv_put, payload)
-
-
-async def delete_progress(loop):
-    await loop.run_in_executor(None, _kv_delete)
-
-
-async def check_and_write_if_polled(loop, payload: dict):
-    """
-    Checks for poll_request flag; writes progress only if flag is set.
-    Called every 5s in encode loop and VMAF loop.
-    """
-    flag = await loop.run_in_executor(None, _kv_check_poll)
-    if flag:
-        await write_progress(loop, payload)
 
 
 # ---------------------------------------------------------------------------
@@ -130,11 +133,11 @@ async def main():
 
     # 3. PARAMETER CONFIGURATION
     def_crf, def_preset = select_params(height)
-    final_crf = config.USER_CRF if (config.USER_CRF and config.USER_CRF.strip()) else def_crf
+    final_crf    = config.USER_CRF if (config.USER_CRF and config.USER_CRF.strip()) else def_crf
     final_preset = config.USER_PRESET if (config.USER_PRESET and config.USER_PRESET.strip()) else def_preset
 
     res_label = config.USER_RES if config.USER_RES else "1080"
-    crop_val = get_crop_params(duration)
+    crop_val  = get_crop_params(duration)
 
     # -- VIDEO FILTERS --
     vf_filters = ["hqdn3d=1.5:1.2:3:3"]
@@ -143,16 +146,16 @@ async def main():
     video_filters = ["-vf", ",".join(vf_filters)]
 
     # -- AUDIO CONFIGURATION --
-    audio_cmd = ["-c:a", "libopus", "-b:a", "32k", "-vbr", "on"]
+    audio_cmd           = ["-c:a", "libopus", "-b:a", "32k", "-vbr", "on"]
     final_audio_bitrate = "32k"
 
     # -- SVT-AV1 PARAMETERS --
     svtav1_tune = "tune=0:film-grain=0:enable-overlays=1:aq-mode=1"
 
     # UI Labels
-    hdr_label = "HDR10" if is_hdr else "SDR"
-    grain_label = " | Grain: 0"
-    crop_label_txt = " | Cropped" if crop_val else ""
+    hdr_label       = "HDR10" if is_hdr else "SDR"
+    grain_label     = " | Grain: 0"
+    crop_label_txt  = " | Cropped" if crop_val else ""
 
     # 4. TELEGRAM UPLINK INITIALIZATION
     async with Client(config.SESSION_NAME, api_id=config.API_ID, api_hash=config.API_HASH, bot_token=config.BOT_TOKEN) as app:
@@ -160,7 +163,7 @@ async def main():
             status = await app.send_message(
                 config.CHAT_ID,
                 f"📡 <b>[ SYSTEM ONLINE ] Encoding: {config.FILE_NAME}</b>\n"
-                f"<i>Send /p in chat to check live progress.</i>",
+                f"<i>Send /p to check live progress.</i>",
                 parse_mode=enums.ParseMode.HTML
             )
         except FloodWait as e:
@@ -168,7 +171,7 @@ async def main():
             status = await app.send_message(
                 config.CHAT_ID,
                 f"📡 <b>[ SYSTEM RECOVERY ] Encoding: {config.FILE_NAME}</b>\n"
-                f"<i>Send /p in chat to check live progress.</i>",
+                f"<i>Send /p to check live progress.</i>",
                 parse_mode=enums.ParseMode.HTML
             )
 
@@ -194,7 +197,9 @@ async def main():
         ]
 
         start_time      = time.time()
-        last_poll_check = 0   # Gate poll checks to every 5s — avoids excess KV reads
+        last_poll_check = 0
+        # Track in-flight progress sends so we don't stack them
+        progress_task   = None
 
         with open(config.LOG_FILE, "w") as f_log:
             process = subprocess.Popen(
@@ -216,40 +221,40 @@ async def main():
                         eta      = (elapsed / percent) * (100 - percent) if percent > 0 else 0
                         size_mb  = os.path.getsize(config.FILE_NAME) / (1024 * 1024) if os.path.exists(config.FILE_NAME) else 0
 
-                        # On-demand only: check for poll_request flag every 5s.
-                        # Zero writes unless user actually sends /p.
+                        # Check KV flag every 5s — fast 404 when /p not sent
                         if time.time() - last_poll_check >= 5:
                             last_poll_check = time.time()
-                            await check_and_write_if_polled(loop, {
-                                "phase":    "encode",
-                                "file":     config.FILE_NAME,
-                                "run_id":   config.GITHUB_RUN_ID,
-                                "percent":  round(percent, 1),
-                                "speed":    round(speed, 2),
-                                "fps":      int(fps),
-                                "elapsed":  int(elapsed),
-                                "eta":      int(eta),
-                                "curr_sec": int(curr_sec),
-                                "duration": int(duration),
-                                "crf":      final_crf,
-                                "preset":   final_preset,
-                                "res":      res_label,
-                                "crop":     bool(crop_val),
-                                "hdr":      hdr_label,
-                                "audio":    config.AUDIO_MODE,
-                                "abitrate": final_audio_bitrate,
-                                "size_mb":  round(size_mb, 2),
-                                "ts":       int(time.time()),
-                            })
+                            # Run in executor so it never blocks ffmpeg stdout reading
+                            flag = await loop.run_in_executor(None, _kv_poll_check_and_clear)
+                            if flag and (progress_task is None or progress_task.done()):
+                                # Fire-and-forget: send progress box + auto-delete in 10s
+                                progress_task = asyncio.create_task(
+                                    send_progress_and_autodelete(app, {
+                                        "file":        config.FILE_NAME,
+                                        "speed":       round(speed, 2),
+                                        "fps":         int(fps),
+                                        "elapsed":     int(elapsed),
+                                        "eta":         int(eta),
+                                        "curr_sec":    int(curr_sec),
+                                        "duration":    int(duration),
+                                        "percent":     round(percent, 1),
+                                        "crf":         final_crf,
+                                        "preset":      final_preset,
+                                        "res":         res_label,
+                                        "crop_label":  crop_label_txt,
+                                        "hdr":         hdr_label,
+                                        "grain_label": grain_label,
+                                        "audio":       config.AUDIO_MODE,
+                                        "abitrate":    final_audio_bitrate,
+                                        "size_mb":     round(size_mb, 2),
+                                    })
+                                )
 
                     except Exception:
                         continue
 
         process.wait()
         total_mission_time = time.time() - start_time
-
-        # Always clean up KV entry when encode ends (success or fail)
-        await delete_progress(loop)
 
         # 6. ERROR HANDLING
         if process.returncode != 0:
@@ -266,8 +271,8 @@ async def main():
             os.remove(config.FILE_NAME)
             os.rename(fixed_file, config.FILE_NAME)
 
-        # 8. METRICS + GOFILE UPLOAD (run in parallel — no reason to wait on each other)
-        final_size  = os.path.getsize(config.FILE_NAME) / (1024 * 1024)
+        # 8. METRICS + GOFILE UPLOAD (concurrent)
+        final_size = os.path.getsize(config.FILE_NAME) / (1024 * 1024)
 
         await app.edit_message_text(
             config.CHAT_ID, status.id,
@@ -275,22 +280,18 @@ async def main():
             parse_mode=enums.ParseMode.HTML
         )
 
-        # Kick off grid + Gofile concurrently
         grid_task  = asyncio.create_task(async_generate_grid(duration, config.FILE_NAME))
         cloud_task = asyncio.create_task(upload_to_cloud(config.FILE_NAME))
 
         if config.RUN_VMAF:
-            # Same on-demand approach: VMAF also only writes when /p is pending
-            vmaf_writer = lambda payload: check_and_write_if_polled(loop, payload)
-            vmaf_val, ssim_val = await get_vmaf(config.FILE_NAME, crop_val, width, height, duration, fps_val, kv_writer=vmaf_writer)
+            vmaf_val, ssim_val = await get_vmaf(config.FILE_NAME, crop_val, width, height, duration, fps_val)
         else:
             vmaf_val, ssim_val = "N/A", "N/A"
 
-        # Wait for both background tasks
         await grid_task
-        cloud = await cloud_task   # dict: {direct, page, source}
+        cloud = await cloud_task  # dict: {direct, page, source}
 
-        # Build cloud link lines for caption
+        # Build cloud link lines
         if cloud["source"] == "gofile":
             cloud_lines = (
                 f"\n\n☁️ <b>GOFILE:</b>\n"
@@ -303,7 +304,6 @@ async def main():
             cloud_lines = "\n\n⚠️ <b>Cloud upload failed.</b>"
 
         # 9. FINAL UPLINK
-        # For files > 2 GB: TG can't receive them so cloud-only
         if final_size > 2000:
             await app.edit_message_text(
                 config.CHAT_ID, status.id,
