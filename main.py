@@ -229,9 +229,18 @@ async def main():
             os.remove(config.FILE_NAME)
             os.rename(fixed_file, config.FILE_NAME)
 
-        # 8. METRICS (VMAF & SSIM)
-        final_size = os.path.getsize(config.FILE_NAME) / (1024 * 1024)
-        grid_task = asyncio.create_task(async_generate_grid(duration, config.FILE_NAME))
+        # 8. METRICS + GOFILE UPLOAD (run in parallel — no reason to wait on each other)
+        final_size  = os.path.getsize(config.FILE_NAME) / (1024 * 1024)
+
+        await app.edit_message_text(
+            config.CHAT_ID, status.id,
+            "☁️ <b>[ SYSTEM.CLOUD ] Uploading to Gofile...</b>",
+            parse_mode=enums.ParseMode.HTML
+        )
+
+        # Kick off grid + Gofile concurrently
+        grid_task  = asyncio.create_task(async_generate_grid(duration, config.FILE_NAME))
+        cloud_task = asyncio.create_task(upload_to_cloud(config.FILE_NAME))
 
         if config.RUN_VMAF:
             vmaf_writer = lambda payload: write_progress(loop, payload)
@@ -239,13 +248,30 @@ async def main():
         else:
             vmaf_val, ssim_val = "N/A", "N/A"
 
+        # Wait for both background tasks
         await grid_task
+        cloud = await cloud_task   # dict: {direct, page, source}
+
+        # Build cloud link lines for caption
+        if cloud["source"] == "gofile":
+            cloud_lines = (
+                f"\n\n☁️ <b>GOFILE:</b>\n"
+                f"└ 🔗 <b>Direct:</b> {cloud['direct']}\n"
+                f"└ 📄 <b>Page:</b> {cloud['page']}"
+            )
+        elif cloud["source"] == "litterbox":
+            cloud_lines = f"\n\n☁️ <b>LITTERBOX (fallback):</b> {cloud['direct']}"
+        else:
+            cloud_lines = "\n\n⚠️ <b>Cloud upload failed.</b>"
 
         # 9. FINAL UPLINK
+        # For files > 2 GB: TG can't receive them so cloud-only
         if final_size > 2000:
-            await app.edit_message_text(config.CHAT_ID, status.id, "⚠️ <b>[ SIZE OVERFLOW ] Rerouting to Cloud...</b>", parse_mode=enums.ParseMode.HTML)
-            cloud_url = await upload_to_cloud(config.FILE_NAME)
-            await app.send_message(config.CHAT_ID, f"☁️ <b>EXTERNAL LINK:</b>\n{cloud_url}", parse_mode=enums.ParseMode.HTML)
+            await app.edit_message_text(
+                config.CHAT_ID, status.id,
+                f"⚠️ <b>[ SIZE OVERFLOW ]</b> File too large for Telegram.{cloud_lines}",
+                parse_mode=enums.ParseMode.HTML
+            )
             return
 
         photo_msg = None
@@ -267,6 +293,7 @@ async def main():
             f"└ <b>Preset:</b> {final_preset} | <b>CRF:</b> {final_crf}\n"
             f"└ <b>Video:</b> {res_label}{crop_label_report} | {hdr_label}{grain_label}\n"
             f"└ <b>Audio:</b> {config.AUDIO_MODE.upper()} @ {final_audio_bitrate}"
+            f"{cloud_lines}"
         )
 
         await app.edit_message_text(config.CHAT_ID, status.id, "🚀 <b>[ SYSTEM.UPLINK ] Transmitting Final Video...</b>", parse_mode=enums.ParseMode.HTML)
