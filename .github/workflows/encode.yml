@@ -173,4 +173,5 @@ jobs:
           AUDIO_BITRATE: ${{ github.event.inputs.audio_bitrate }}
           RUN_VMAF: ${{ github.event.inputs.run_vmaf }}
           FILE_NAME: ${{ needs.download_phase.outputs.final_name }}
+          WORKER_URL: ${{ secrets.WORKER_URL }}
         run: python3 main.py
