@@ -46,7 +46,7 @@ async def main():
     video_filters = ["-vf", ",".join(vf_filters)]
 
     # -- AUDIO CONFIGURATION --
-    audio_cmd           = ["-c:a", "libopus", "-b:a", "32k", "-vbr", "on"]
+    audio_cmd           = ["-c:a", "libopus", "-b:a", "32k", "-vbr", "on", "-mapping_family", "1"]
     final_audio_bitrate = "32k"
 
     # -- SVT-AV1 PARAMETERS --
@@ -59,19 +59,21 @@ async def main():
 
     # 4. TELEGRAM UPLINK INITIALIZATION
     async with Client(config.SESSION_NAME, api_id=config.API_ID, api_hash=config.API_HASH, bot_token=config.BOT_TOKEN) as app:
+        status = None
         try:
-            status = await app.send_message(
-                config.CHAT_ID,
-                f"📡 <b>[ SYSTEM ONLINE ] Encoding: {config.FILE_NAME}</b>",
-                parse_mode=enums.ParseMode.HTML
-            )
-        except FloodWait as e:
-            await asyncio.sleep(e.value + 2)
-            status = await app.send_message(
-                config.CHAT_ID,
-                f"📡 <b>[ SYSTEM RECOVERY ] Encoding: {config.FILE_NAME}</b>",
-                parse_mode=enums.ParseMode.HTML
-            )
+            try:
+                status = await app.send_message(
+                    config.CHAT_ID,
+                    f"📡 <b>[ SYSTEM ONLINE ] Encoding: {config.FILE_NAME}</b>",
+                    parse_mode=enums.ParseMode.HTML
+                )
+            except FloodWait as e:
+                await asyncio.sleep(e.value + 2)
+                status = await app.send_message(
+                    config.CHAT_ID,
+                    f"📡 <b>[ SYSTEM RECOVERY ] Encoding: {config.FILE_NAME}</b>",
+                    parse_mode=enums.ParseMode.HTML
+                )
 
         # 5. ENCODING EXECUTION
         cmd = [
@@ -145,6 +147,9 @@ async def main():
             error_snippet = "".join(open(config.LOG_FILE).readlines()[-10:]) if os.path.exists(config.LOG_FILE) else "Unknown Engine Crash."
             await app.edit_message_text(config.CHAT_ID, status.id, get_failure_ui(config.FILE_NAME, error_snippet), parse_mode=enums.ParseMode.HTML)
             await app.send_document(config.CHAT_ID, config.LOG_FILE, caption="📑 <b>FULL MISSION LOG</b>")
+            await asyncio.sleep(30)   # give user time to read the failure box
+            try: await status.delete()
+            except: pass
             return
 
         # 7. POST-PROCESSING (Remux)
@@ -235,6 +240,15 @@ async def main():
         except: pass
         for f in [config.SOURCE, config.FILE_NAME, config.LOG_FILE, config.SCREENSHOT]:
             if os.path.exists(f): os.remove(f)
+
+        except Exception as e:
+            # Unhandled exception — clean up status message then re-raise
+            # so the workflow step exits non-zero and notify_failure fires
+            print(f"FATAL: {e}")
+            if status:
+                try: await status.delete()
+                except: pass
+            raise
 
 
 if __name__ == "__main__":
