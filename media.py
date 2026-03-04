@@ -186,32 +186,89 @@ def select_params(height):
     return 24, 4
 
 
+
 async def upload_to_cloud(filepath):
-    cmd = [
-        "curl", "-H", "Max-Days: 3",
-        "--upload-file", filepath,
-        f"https://transfer.sh/{os.path.basename(filepath)}"
-    ]
-    proc          = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    stdout, _     = await proc.communicate()
-    url           = stdout.decode().strip()
+    """
+    Uploads to Gofile (primary) and returns a dict:
+        {
+            "direct":  "https://store-xx.gofile.io/download/web/{id}/{name}",
+            "page":    "https://gofile.io/d/{id}",
+            "source":  "gofile" | "litterbox" | "error"
+        }
 
-    # Guard against transfer.sh returning an error page instead of a URL
-    if url.startswith("https://"):
-        return url
+    Direct link constructed from:
+        https://{server}.gofile.io/download/web/{fileId}/{fileName}
+    where server comes from Step 1, fileId and fileName from Step 2 —
+    no extra API call needed.
+    """
+    filename = os.path.basename(filepath)
 
-    # Fallback: litterbox.catbox.moe (72h retention, no size limit for files <1GB)
+    # ── Step 1: Get best upload server ──────────────────────────────────────
     try:
-        fallback_cmd  = [
-            "curl", "-F", "reqtype=fileupload", "-F", "time=72h",
-            "-F", f"fileToUpload=@{filepath}",
-            "https://litterbox.catbox.moe/resources/internals/api.php"
-        ]
-        proc2         = await asyncio.create_subprocess_exec(*fallback_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        stdout2, _    = await proc2.communicate()
-        fallback_url  = stdout2.decode().strip()
-        if fallback_url.startswith("https://"):
-            return fallback_url
-    except: pass
+        server_proc = await asyncio.create_subprocess_exec(
+            "curl", "-s", "https://api.gofile.io/servers",
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        server_out, _ = await server_proc.communicate()
+        server_data   = json.loads(server_out.decode())
 
-    return f"⚠️ Upload failed. transfer.sh response: {url[:200]}"
+        if server_data.get("status") != "ok":
+            raise ValueError(f"Gofile server API error: {server_data}")
+
+        server = server_data["data"]["servers"][0]["name"]
+
+    except Exception as e:
+        print(f"[Gofile] Step 1 failed: {e}")
+        return await _litterbox_fallback(filepath)
+
+    # ── Step 2: Upload file ──────────────────────────────────────────────────
+    try:
+        upload_proc = await asyncio.create_subprocess_exec(
+            "curl", "-s",
+            "-F", f"file=@{filepath}",
+            f"https://{server}.gofile.io/contents/uploadfile",
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        upload_out, _ = await upload_proc.communicate()
+        upload_data   = json.loads(upload_out.decode())
+
+        if upload_data.get("status") != "ok":
+            raise ValueError(f"Gofile upload error: {upload_data}")
+
+        file_id    = upload_data["data"]["id"]
+        page_url   = upload_data["data"]["downloadPage"]
+
+        # Direct link pattern confirmed from file details API:
+        # https://{server}.gofile.io/download/web/{fileId}/{fileName}
+        direct_url = f"https://{server}.gofile.io/download/web/{file_id}/{filename}"
+
+        return {
+            "direct": direct_url,
+            "page":   page_url,
+            "source": "gofile"
+        }
+
+    except Exception as e:
+        print(f"[Gofile] Step 2 failed: {e}")
+        return await _litterbox_fallback(filepath)
+
+
+async def _litterbox_fallback(filepath):
+    """Fallback uploader: litterbox.catbox.moe — stable, no size cap under 1 GB."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "curl", "-s",
+            "-F", "reqtype=fileupload",
+            "-F", "time=72h",
+            "-F", f"fileToUpload=@{filepath}",
+            "https://litterbox.catbox.moe/resources/internals/api.php",
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        stdout, _ = await proc.communicate()
+        url       = stdout.decode().strip()
+        if url.startswith("https://"):
+            return {"direct": url, "page": url, "source": "litterbox"}
+    except Exception as e:
+        print(f"[Litterbox] Fallback failed: {e}")
+
+    return {"direct": None, "page": None, "source": "error"}
