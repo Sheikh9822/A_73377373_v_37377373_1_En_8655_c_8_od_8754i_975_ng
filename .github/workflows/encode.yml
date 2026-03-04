@@ -76,7 +76,6 @@ jobs:
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          WORKER_URL: ${{ secrets.WORKER_URL }}
           VIDEO_URL: ${{ github.event.inputs.video_url }}
           CUSTOM: ${{ github.event.inputs.custom_name }}
         run: |
@@ -165,7 +164,6 @@ jobs:
           API_HASH: ${{ secrets.TG_API_HASH }}
           BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          WORKER_URL: ${{ secrets.WORKER_URL }}
           SESSION_NAME: "enc_session"
           USER_RES: ${{ github.event.inputs.res_choice }}
           USER_CRF: ${{ github.event.inputs.custom_crf }}
