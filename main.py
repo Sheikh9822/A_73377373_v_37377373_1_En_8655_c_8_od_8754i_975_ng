@@ -178,9 +178,11 @@ async def main():
         # 9. Build inline buttons from cloud result
         btn_row = []
         if cloud["source"] == "gofile":
-            btn_row.append(InlineKeyboardButton("☁️ Gofile Page", url=cloud["page"]))
-            btn_row.append(InlineKeyboardButton("🔗 Direct Link", url=cloud["direct"]))
-        elif cloud["source"] == "litterbox":
+            if cloud.get("page"):
+                btn_row.append(InlineKeyboardButton("☁️ Gofile", url=cloud["page"]))
+            if cloud.get("direct"):
+                btn_row.append(InlineKeyboardButton("🔗 Direct", url=cloud["direct"]))
+        elif cloud["source"] == "litterbox" and cloud.get("direct"):
             btn_row.append(InlineKeyboardButton("☁️ Litterbox", url=cloud["direct"]))
         buttons = InlineKeyboardMarkup([btn_row]) if btn_row else None
 
