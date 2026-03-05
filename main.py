@@ -214,6 +214,7 @@ async def main():
             f"📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>\n"
             f"⏱ <b>TIME:</b> <code>{format_time(total_mission_time)}</code>\n"
             f"📦 <b>SIZE:</b> <code>{final_size:.2f} MB</code>\n"
+            f"🎞 <b>DURATION:</b> <code>{format_time(duration)}</code>\n"
             f"📊 <b>QUALITY:</b> VMAF: <code>{vmaf_val}</code> | SSIM: <code>{ssim_val}</code>\n\n"
             f"🛠 <b>SPECS:</b>\n"
             f"└ <b>Preset:</b> {final_preset} | <b>CRF:</b> {final_crf}\n"
