@@ -158,7 +158,19 @@ jobs:
         run: |
           if [ -f "tg_session_dir/tg_dl_session.session" ]; then
             cp tg_session_dir/tg_dl_session.session ./enc_session.session
-            echo "✅ Session copied successfully."
+            echo "✅ User session copied."
+          fi
+          if [ -f "tg_session_dir/enc_session.session" ]; then
+            cp tg_session_dir/enc_session.session ./enc_session.session
+            echo "✅ Bot session restored from cache."
+          fi
+
+      - name: 💾 Save Bot Session
+        if: always()
+        run: |
+          if [ -f "enc_session.session" ]; then
+            cp enc_session.session tg_session_dir/enc_session.session
+            echo "✅ Bot session saved to cache."
           fi
 
       - name: 🚀 Start Parallel Encoder
