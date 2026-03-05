@@ -175,7 +175,7 @@ async def main():
         )
 
         grid_task  = asyncio.create_task(async_generate_grid(duration, config.FILE_NAME))
-        cloud_task = asyncio.create_task(upload_to_cloud(config.FILE_NAME))
+        cloud_task = asyncio.create_task(upload_to_cloud(config.FILE_NAME, app, config.CHAT_ID, status))
 
         if config.RUN_VMAF:
             vmaf_val, ssim_val = await get_vmaf(config.FILE_NAME, crop_val, width, height, duration, fps_val)
@@ -206,13 +206,7 @@ async def main():
             )
             return
 
-        photo_msg = None
-        if os.path.exists(config.SCREENSHOT):
-            photo_msg = await app.send_photo(
-                config.CHAT_ID, config.SCREENSHOT,
-                caption=f"🖼 <b>PROXIMITY GRID:</b> <code>{config.FILE_NAME}</code>",
-                parse_mode=enums.ParseMode.HTML
-            )
+        thumb = config.SCREENSHOT if os.path.exists(config.SCREENSHOT) else None
 
         crop_label_report = " | Cropped" if crop_val else ""
         report = (
@@ -234,9 +228,9 @@ async def main():
         await app.send_document(
             chat_id=config.CHAT_ID,
             document=config.FILE_NAME,
+            thumb=thumb,
             caption=report,
             parse_mode=enums.ParseMode.HTML,
-            reply_to_message_id=photo_msg.id if photo_msg else None,
             reply_markup=buttons,
             progress=upload_progress,
             progress_args=(app, config.CHAT_ID, status, config.FILE_NAME)
