@@ -63,7 +63,7 @@ jobs:
       - name: 🛠 Install Tools
         run: |
           sudo apt-get update && sudo apt-get install -y aria2
-          pip install pyrogram tgcrypto yt-dlp "pymongo[srv]"
+          pip install pyrogram tgcrypto yt-dlp
 
       - name: 📁 Setup Session
         run: mkdir -p tg_session_dir
@@ -214,9 +214,6 @@ jobs:
           FILE_NAME: ${{ needs.download_phase.outputs.final_name }}
           DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
           DASHBOARD_SECRET: ${{ secrets.DASHBOARD_SECRET }}
-          MONGO_URI: ${{ secrets.MONGO_URI }}
-          MONGO_DB: av1
-          MONGO_COL: jobs
         run: python3 main.py
       - name: 🗑 Delete Payload Artifact
         if: always()
