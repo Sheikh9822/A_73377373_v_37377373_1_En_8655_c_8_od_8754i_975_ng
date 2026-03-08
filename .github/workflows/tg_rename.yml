@@ -39,19 +39,8 @@ jobs:
   rename_mission:
     runs-on: ubuntu-latest
 
-    # Mirror the same concurrency lanes used by encode.yml so TG sessions
-    # are shared correctly and FloodWaits don't collide across workflows.
-    concurrency:
-      group: >-
-        ${{
-          (!contains(inputs.video_url, 't.me') && !contains(inputs.video_url, 'tg_file:')) && github.run_id ||
-          (
-            (endsWith(github.run_number, '0') || endsWith(github.run_number, '3') || endsWith(github.run_number, '6') || endsWith(github.run_number, '9')) && 'tg-lane-A' ||
-            (endsWith(github.run_number, '1') || endsWith(github.run_number, '4') || endsWith(github.run_number, '7')) && 'tg-lane-B' ||
-            'tg-lane-C'
-          )
-        }}
-      cancel-in-progress: false
+    # No job-level concurrency — parallel renames are fine.
+    # FloodWait handled by retry logic in tg_rename.py.
 
     steps:
       - uses: actions/checkout@v4

@@ -61,17 +61,9 @@ jobs:
   # PHASE 1: SMART DOWNLOADER
   download_phase:
     runs-on: ubuntu-latest
-    concurrency:
-      group: >-
-        ${{ 
-          (!contains(inputs.video_url, 't.me') && !contains(inputs.video_url, 'tg_file:')) && github.run_id || 
-          (
-            (endsWith(github.run_number, '0') || endsWith(github.run_number, '3') || endsWith(github.run_number, '6') || endsWith(github.run_number, '9')) && 'tg-lane-A' ||
-            (endsWith(github.run_number, '1') || endsWith(github.run_number, '4') || endsWith(github.run_number, '7')) && 'tg-lane-B' || 
-            'tg-lane-C'
-          )
-        }}
-      cancel-in-progress: false
+    # No job-level concurrency — parallel runs are fine.
+    # FloodWait is handled by retry logic in tg_handler.py.
+    # Session cache lanes (A/B/C) are resolved per-run at step level.
     outputs:
       final_name: ${{ steps.get_name.outputs.NAME }}
     steps:
