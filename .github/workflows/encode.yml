@@ -235,10 +235,10 @@ jobs:
           done
 
       - name: Collect Workflow Telemetry
-          uses: catchpoint/workflow-telemetry-action@v2
-          with:
-            theme: dark
-            job_summary: true # This puts the graph in your GitHub Action Summary page
+        uses: catchpoint/workflow-telemetry-action@v2
+        with:
+          theme: dark
+          job_summary: true
 
       - name: 🚀 Start Parallel Encoder
         env:
@@ -258,12 +258,12 @@ jobs:
           AUDIO_MODE: ${{ github.event.inputs.audio_mode }}
           AUDIO_BITRATE: ${{ github.event.inputs.audio_bitrate }}
           RUN_VMAF: ${{ github.event.inputs.run_vmaf }}
-          ANIME_NAME:   ${{ github.event.inputs.anime_name }}
-          SEASON:       ${{ github.event.inputs.season }}
-          EPISODE:      ${{ github.event.inputs.episode }}
-          AUDIO_TYPE:    ${{ github.event.inputs.audio_type }}
-          CONTENT_TYPE:  ${{ github.event.inputs.content_type }}
-          SUB_TRACKS:    ${{ github.event.inputs.sub_tracks }}
+          ANIME_NAME: ${{ github.event.inputs.anime_name }}
+          SEASON: ${{ github.event.inputs.season }}
+          EPISODE: ${{ github.event.inputs.episode }}
+          AUDIO_TYPE: ${{ github.event.inputs.audio_type }}
+          CONTENT_TYPE: ${{ github.event.inputs.content_type }}
+          SUB_TRACKS: ${{ github.event.inputs.sub_tracks }}
           AUDIO_TRACKS: ${{ github.event.inputs.audio_tracks }}
           FILE_NAME: ${{ needs.download_phase.outputs.final_name }}
         run: python3 main.py
