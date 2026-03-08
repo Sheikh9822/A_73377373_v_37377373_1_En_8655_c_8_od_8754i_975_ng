@@ -214,7 +214,9 @@ async def main():
     if res_label: vf_filters.append(f"scale=-1:{res_label}")  # skip when ORIGINAL
     video_filters = ["-vf", ",".join(vf_filters)]
 
-    res_label = res_label or "Original"  # display label for UI / report
+    # Display label — show actual source height when no downscale requested
+    from rename import detect_quality
+    res_label = res_label or f"Original({detect_quality(height)})"
 
     # -- AUDIO CONFIGURATION --
     audio_cmd           = ["-af", "aformat=channel_layouts=stereo", "-c:a", "libopus", "-b:a", "32k", "-vbr", "on"]
