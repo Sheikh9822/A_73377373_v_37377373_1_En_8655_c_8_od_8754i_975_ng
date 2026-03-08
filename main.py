@@ -172,19 +172,34 @@ async def resource_monitor(stop_event: asyncio.Event, stats: dict, interval: int
     # First call initialises the baseline; discard the result
     psutil.cpu_percent(interval=None)
     proc.cpu_percent(interval=None)
+    for c in proc.children(recursive=True):
+        try: c.cpu_percent(interval=None)
+        except psutil.NoSuchProcess: pass
+
     while not stop_event.is_set():
         await asyncio.sleep(interval)
-        sys_cpu  = psutil.cpu_percent(interval=None)
-        proc_cpu = proc.cpu_percent(interval=None)
-        ram_mb   = proc.memory_info().rss / 1024 ** 2
-        sys_ram  = psutil.virtual_memory()
-        stats["proc_cpu"] = proc_cpu
+        sys_cpu = psutil.cpu_percent(interval=None)
+
+        # Sum CPU + RAM across python process and all children (ffmpeg, etc.)
+        total_cpu = proc.cpu_percent(interval=None)
+        total_ram = proc.memory_info().rss
+        for child in proc.children(recursive=True):
+            try:
+                total_cpu += child.cpu_percent(interval=None)
+                total_ram += child.memory_info().rss
+            except psutil.NoSuchProcess:
+                pass
+
+        ram_mb  = total_ram / 1024 ** 2
+        sys_ram = psutil.virtual_memory()
+
+        stats["proc_cpu"] = total_cpu
         stats["sys_cpu"]  = sys_cpu
         stats["ram_mb"]   = ram_mb
         stats["sys_ram"]  = sys_ram.percent
         print(
-            f"[MONITOR] PID CPU: {proc_cpu:5.1f}% | SYS CPU: {sys_cpu:5.1f}% | "
-            f"PID RAM: {ram_mb:6.1f}MB | SYS RAM: {sys_ram.percent:5.1f}%"
+            f"[MONITOR] PROC CPU: {total_cpu:6.1f}% | SYS CPU: {sys_cpu:5.1f}% | "
+            f"PROC RAM: {ram_mb:6.1f}MB | SYS RAM: {sys_ram.percent:5.1f}%"
         )
 
 
