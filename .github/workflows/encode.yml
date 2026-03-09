@@ -84,15 +84,11 @@ jobs:
       - name: 🔀 Resolve Lane
         id: lane
         run: |
-          LAST=$(( ${{ github.run_number }} % 10 ))
-          if [[ "$LAST" == "0" || "$LAST" == "3" || "$LAST" == "6" || "$LAST" == "9" ]]; then
-            echo "name=lane-A" >> $GITHUB_OUTPUT
-          elif [[ "$LAST" == "1" || "$LAST" == "4" || "$LAST" == "7" ]]; then
-            echo "name=lane-B" >> $GITHUB_OUTPUT
-          else
-            echo "name=lane-C" >> $GITHUB_OUTPUT
-          fi
-          echo "Lane: $(cat $GITHUB_OUTPUT | grep name | cut -d= -f2)"
+          LANES=(A B C D E F G H I J K L M N O P Q R S T)
+          IDX=$(( ${{ github.run_number }} % 20 ))
+          LANE="${LANES[$IDX]}"
+          echo "name=lane-${LANE}" >> $GITHUB_OUTPUT
+          echo "Lane: lane-${LANE}"
 
       - name: 💾 Restore Session Cache
         uses: actions/cache@v4
@@ -211,14 +207,11 @@ jobs:
       - name: 🔀 Resolve Lane
         id: lane
         run: |
-          LAST=$(( ${{ github.run_number }} % 10 ))
-          if [[ "$LAST" == "0" || "$LAST" == "3" || "$LAST" == "6" || "$LAST" == "9" ]]; then
-            echo "name=lane-A" >> $GITHUB_OUTPUT
-          elif [[ "$LAST" == "1" || "$LAST" == "4" || "$LAST" == "7" ]]; then
-            echo "name=lane-B" >> $GITHUB_OUTPUT
-          else
-            echo "name=lane-C" >> $GITHUB_OUTPUT
-          fi
+          LANES=(A B C D E F G H I J K L M N O P Q R S T)
+          IDX=$(( ${{ github.run_number }} % 20 ))
+          LANE="${LANES[$IDX]}"
+          echo "name=lane-${LANE}" >> $GITHUB_OUTPUT
+          echo "Lane: lane-${LANE}"
 
       - name: 💾 Restore Session Cache
         uses: actions/cache/restore@v4
