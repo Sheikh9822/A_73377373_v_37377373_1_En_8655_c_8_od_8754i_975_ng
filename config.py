@@ -35,16 +35,5 @@ CF_KV_TOKEN       = os.getenv("CF_KV_TOKEN", "")
 # GitHub Actions always sets GITHUB_RUN_ID automatically.
 GITHUB_RUN_ID = os.getenv("GITHUB_RUN_ID", "local")
 
-# ---------- ANIME RENAME SETTINGS ----------
-# Set by the bridge when launching a mission.
-# If ANIME_NAME is blank, the raw FILE_NAME is kept as-is.
-ANIME_NAME   = os.getenv("ANIME_NAME",   "")       # e.g. "Medalist"
-SEASON       = os.getenv("SEASON",       "1")      # e.g. "2"
-EPISODE      = os.getenv("EPISODE",      "1")      # e.g. "7"
-AUDIO_TYPE   = os.getenv("AUDIO_TYPE",    "Auto")   # Sub | Dual | Tri | Multi | Auto
-CONTENT_TYPE = os.getenv("CONTENT_TYPE", "Anime")  # Anime | Donghua | Hentai | HMV | AMV | custom
-SUB_TRACKS   = os.getenv("SUB_TRACKS",   "")       # e.g. "English, Arabic"
-AUDIO_TRACKS = os.getenv("AUDIO_TRACKS", "")       # e.g. "Japanese, English (Dub)"
-
 # ---------- GLOBAL STATE ----------
 CANCELLED = False
