@@ -3,6 +3,7 @@ import os
 import subprocess
 import time
 import shutil
+import psutil
 from pyrogram import Client, enums
 from pyrogram.errors import FloodWait
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -10,6 +11,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import config
 from media import get_video_info, get_crop_params, select_params, async_generate_grid, get_vmaf, upload_to_cloud
 from ui import get_encode_ui, format_time, upload_progress, get_failure_ui
+from rename import resolve_output_name, format_track_report
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +165,28 @@ async def tg_edit(tg_state: dict, tg_ready: asyncio.Event, text: str, reply_mark
 
 
 # ---------------------------------------------------------------------------
+# RESOURCE MONITOR — logs CPU + RAM every 5s during encoding
+# ---------------------------------------------------------------------------
+async def resource_monitor(stop_event: asyncio.Event, stats: dict, interval: int = 5):
+    proc = psutil.Process(os.getpid())
+    psutil.cpu_percent(interval=None)  # baseline
+
+    while not stop_event.is_set():
+        await asyncio.sleep(interval)
+        sys_cpu = psutil.cpu_percent(interval=None)
+        sys_ram = psutil.virtual_memory()
+        ram_mb  = proc.memory_info().rss / 1024 ** 2
+
+        stats["sys_cpu"] = sys_cpu
+        stats["ram_mb"]  = ram_mb
+        stats["sys_ram"] = sys_ram.percent
+        print(
+            f"[MONITOR] CPU: {sys_cpu:5.1f}% | "
+            f"RAM: {ram_mb:6.1f}MB proc | {sys_ram.percent:5.1f}% sys"
+        )
+
+
+# ---------------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------------
 async def main():
@@ -180,26 +204,51 @@ async def main():
         print(f"Metadata error: {e}")
         return
 
-    # 3. PARAMETER CONFIGURATION
+    # 3. RENAME — build structured output filename if ANIME_NAME is set
+    if config.ANIME_NAME and config.ANIME_NAME.strip():
+        resolved_name, audio_type_label, audio_tracks, sub_tracks = resolve_output_name(
+            source               = config.SOURCE,
+            anime_name           = config.ANIME_NAME,
+            season               = config.SEASON,
+            episode              = config.EPISODE,
+            height               = height,
+            audio_type_override  = config.AUDIO_TYPE,
+            content_type         = config.CONTENT_TYPE,
+        )
+        config.FILE_NAME = resolved_name
+        print(f"[rename] Output → {resolved_name}  |  Audio: {audio_type_label}")
+    else:
+        # No rename requested — probe tracks for report only
+        from rename import get_track_info
+        audio_tracks, sub_tracks = get_track_info(config.SOURCE)
+        audio_type_label = None
+
+    # 4. PARAMETER CONFIGURATION
     def_crf, def_preset = select_params(height)
     final_crf    = config.USER_CRF if (config.USER_CRF and config.USER_CRF.strip()) else def_crf
     final_preset = config.USER_PRESET if (config.USER_PRESET and config.USER_PRESET.strip()) else def_preset
 
-    res_label = config.USER_RES if config.USER_RES else "1080"
+    res_label = config.USER_RES if (config.USER_RES and config.USER_RES.strip()) else None
     crop_val  = get_crop_params(duration)
 
     # -- VIDEO FILTERS --
     vf_filters = ["hqdn3d=1.5:1.2:3:3"]
     if crop_val: vf_filters.append(f"crop={crop_val}")
-    vf_filters.append(f"scale=-1:{res_label}")
+    if res_label: vf_filters.append(f"scale=-1:{res_label}")  # skip when ORIGINAL
     video_filters = ["-vf", ",".join(vf_filters)]
+
+    # Display label — show actual source height when no downscale requested
+    from rename import detect_quality
+    res_label = res_label or f"Original({detect_quality(height)})"
 
     # -- AUDIO CONFIGURATION --
     audio_cmd           = ["-af", "aformat=channel_layouts=stereo", "-c:a", "libopus", "-b:a", "32k", "-vbr", "on"]
     final_audio_bitrate = "32k"
 
     # -- SVT-AV1 PARAMETERS --
-    svtav1_tune = "tune=0:film-grain=0:enable-overlays=1:aq-mode=1"
+    # pin=0 is required for GitHub Actions (virtualized VMs don't honour CPU affinity).
+    # Without it SVT-AV1 tries to pin threads to specific cores and hangs indefinitely.
+    svtav1_tune = "tune=0:film-grain=0:enable-overlays=1:aq-mode=1:pin=0:lp=8:tile-columns=2:tile-rows=1:la-depth=60"
 
     # UI Labels
     hdr_label      = "HDR10" if is_hdr else "SDR"
@@ -244,6 +293,11 @@ async def main():
         stderr=asyncio.subprocess.STDOUT,
     )
 
+    # Start resource monitor alongside encoding
+    monitor_stop  = asyncio.Event()
+    monitor_stats = {}
+    monitor_task  = asyncio.create_task(resource_monitor(monitor_stop, monitor_stats))
+
     start_time        = time.time()
     last_progress_pct = -1
     last_update_time  = 0
@@ -277,7 +331,9 @@ async def main():
                         curr_sec, duration, percent,
                         final_crf, final_preset, res_label,
                         crop_label_txt, hdr_label, grain_label,
-                        config.AUDIO_MODE, final_audio_bitrate, size_mb
+                        config.AUDIO_MODE, final_audio_bitrate, size_mb,
+                        cpu=monitor_stats.get("sys_cpu"),
+                        ram=monitor_stats.get("sys_ram"),
                     )
                     last_ui_text = scifi_ui   # always keep the freshest snapshot
 
@@ -291,6 +347,8 @@ async def main():
                     continue
 
     await process.wait()
+    monitor_stop.set()
+    await monitor_task
     total_mission_time = time.time() - start_time
 
     # If TG is still waiting out a FloodWait, block here until it connects.
@@ -386,6 +444,21 @@ async def main():
         thumb = config.SCREENSHOT if os.path.exists(config.SCREENSHOT) else None
 
         crop_label_report = " | Cropped" if crop_val else ""
+        track_report = format_track_report(audio_tracks, sub_tracks)
+
+        # Append user-supplied track label notes if provided
+        user_track_notes = ""
+        if config.SUB_TRACKS and config.SUB_TRACKS.strip():
+            user_track_notes += f"\n🔤 <b>SUB LABELS:</b>  <code>{config.SUB_TRACKS}</code>"
+        if config.AUDIO_TRACKS and config.AUDIO_TRACKS.strip():
+            user_track_notes += f"\n🔊 <b>AUDIO LABELS:</b> <code>{config.AUDIO_TRACKS}</code>"
+
+        audio_mode_line = (
+            f"{audio_type_label.upper()} ({config.AUDIO_MODE.upper()} @ {final_audio_bitrate})"
+            if audio_type_label
+            else f"{config.AUDIO_MODE.upper()} @ {final_audio_bitrate}"
+        )
+        content_line = f"└ Type: {config.CONTENT_TYPE}\n" if config.CONTENT_TYPE else ""
         report = (
             f"✅ <b>MISSION ACCOMPLISHED</b>\n\n"
             f"📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>\n"
@@ -396,7 +469,10 @@ async def main():
             f"🛠 <b>SPECS:</b>\n"
             f"└ Preset: {final_preset} | CRF: {final_crf}\n"
             f"└ Video: {res_label}{crop_label_report} | {hdr_label}{grain_label}\n"
-            f"└ Audio: {config.AUDIO_MODE.upper()} @ {final_audio_bitrate}"
+            f"└ Audio: {audio_mode_line}\n"
+            f"{content_line}"
+            f"\n{track_report}"
+            f"{user_track_notes}"
         )
 
         import ui as _ui; _ui.last_up_pct = -1; _ui.last_up_update = 0; _ui.up_start_time = 0
