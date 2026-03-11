@@ -20,7 +20,8 @@ USER_PRESET = os.getenv("USER_PRESET")
 USER_GRAIN = os.getenv("USER_GRAIN", "0")
 AUDIO_MODE = os.getenv("AUDIO_MODE", "opus")
 AUDIO_BITRATE = os.getenv("AUDIO_BITRATE", "128k")
-RUN_VMAF = os.getenv("RUN_VMAF", "true").lower() == "true"
+RUN_VMAF      = os.getenv("RUN_VMAF",      "true").lower() == "true"
+RUN_UPLOAD    = os.getenv("RUN_UPLOAD",    "true").lower() == "true"
 
 # ---------- CLOUDFLARE KV (for /p progress command) ----------
 # These allow main.py (running in GitHub Actions) to push live progress
@@ -34,6 +35,11 @@ CF_KV_TOKEN       = os.getenv("CF_KV_TOKEN", "")
 # Unique key per run so parallel encodes don't collide.
 # GitHub Actions always sets GITHUB_RUN_ID automatically.
 GITHUB_RUN_ID = os.getenv("GITHUB_RUN_ID", "local")
+
+# ---------- ENCODER BRANDING ----------
+# Sets the MKV container Title tag on every output file.
+# Leave blank to inherit the title from the source file.
+ENCODER_TITLE = os.getenv("ENCODER_TITLE", "zub'sEncodes")
 
 # ---------- ANIME RENAME SETTINGS ----------
 # Set by the bridge when launching a mission.
