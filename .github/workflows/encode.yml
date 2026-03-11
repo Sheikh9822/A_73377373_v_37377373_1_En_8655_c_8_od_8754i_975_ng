@@ -31,6 +31,9 @@ on:
       run_vmaf:
         description: 'Run VMAF?'
         default: 'true'
+      run_upload:
+        description: 'Upload to Gofile?'
+        default: 'true'
       anime_name:
         description: 'Anime Name (leave blank to skip rename)'
         default: ''
@@ -269,6 +272,7 @@ jobs:
           AUDIO_MODE: ${{ github.event.inputs.audio_mode }}
           AUDIO_BITRATE: ${{ github.event.inputs.audio_bitrate }}
           RUN_VMAF: ${{ github.event.inputs.run_vmaf }}
+          RUN_UPLOAD: ${{ github.event.inputs.run_upload }}
           ANIME_NAME: ${{ github.event.inputs.anime_name }}
           SEASON: ${{ github.event.inputs.season }}
           EPISODE: ${{ github.event.inputs.episode }}
