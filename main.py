@@ -10,6 +10,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 import config
 from media import get_video_info, get_crop_params, select_params, async_generate_grid, get_vmaf, upload_to_cloud
+from rename import lang_code_to_name
 from ui import get_encode_ui, format_time, upload_progress, get_failure_ui
 from rename import resolve_output_name, format_track_report
 
@@ -307,6 +308,36 @@ async def main():
     tg_connect_start = time.time()   # record when we started waiting for TG
 
     # 5. ENCODING EXECUTION (starts immediately, does not wait for TG)
+
+    # -- PGS SUBTITLE EXCLUSION --
+    # PGS (hdmv_pgs_bitmap / pgssub) are image-based bitmap subtitles.
+    # They inflate file size significantly and are dropped from the output.
+    # We identify them by their subtitle-stream-relative index (0-based within
+    # the subtitle stream list) and inject -map -0:s:N exclusions into ffmpeg.
+    PGS_CODECS = {"hdmv_pgs_bitmap", "pgssub"}
+    pgs_exclusions: list[str] = []
+    for sub_idx, st in enumerate(sub_tracks):
+        if st.get("codec", "").lower() in PGS_CODECS:
+            pgs_exclusions += ["-map", f"-0:s:{sub_idx}"]
+            print(f"[encode] Dropping PGS subtitle stream #s:{sub_idx} "
+                  f"(codec: {st['codec']}, lang: {st['lang']}, title: '{st['title']}')")
+    if pgs_exclusions:
+        print(f"[encode] {len(pgs_exclusions)//2} PGS track(s) excluded from output.")
+
+    # -- SUBTITLE TITLE RENAME --
+    # Set each kept (non-PGS) subtitle track's title to its language name
+    # e.g. "jpn" -> "Japanese", "eng" -> "English".
+    # Uses output-stream-relative index (0-based among kept subtitle streams).
+    sub_title_meta: list[str] = []
+    out_sub_idx = 0
+    for st in sub_tracks:
+        if st.get("codec", "").lower() in PGS_CODECS:
+            continue   # skipped stream — doesn't consume an output slot
+        lang_name = lang_code_to_name(st["lang"])
+        sub_title_meta += [f"-metadata:s:s:{out_sub_idx}", f"title={lang_name}"]
+        print(f"[encode] Subtitle #s:{out_sub_idx} title set to '{lang_name}' (lang: {st['lang']})")
+        out_sub_idx += 1
+
     cmd = [
         "ffmpeg",
         # Input-side seeking (fast; placed BEFORE -i)
@@ -315,6 +346,7 @@ async def main():
         "-map", "0:v:0",
         "-map", "0:a?",
         "-map", "0:s?",
+        *pgs_exclusions,          # drop any PGS subtitle streams
         *video_filters,
         "-c:v", "libsvtav1",
         "-pix_fmt", "yuv420p10le",
@@ -323,6 +355,7 @@ async def main():
         "-svtav1-params", svtav1_tune,
         "-threads", "0",
         *audio_cmd,
+        *sub_title_meta,          # rename subtitle titles to language names
         "-c:s", "copy",
         "-map_chapters", "0",
         "-progress", "pipe:1",
