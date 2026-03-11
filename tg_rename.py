@@ -54,6 +54,17 @@ AUDIO_TYPE   = os.getenv("AUDIO_TYPE",      "Auto").strip()
 CONTENT_TYPE = os.getenv("CONTENT_TYPE",    "Anime").strip()
 SUB_TRACKS   = os.getenv("SUB_TRACKS",      "").strip()
 AUDIO_TRACKS = os.getenv("AUDIO_TRACKS",    "").strip()
+# Resolution override — when set (e.g. "720"), use it instead of probing source height.
+# Passed from the bridge when the user explicitly chose a resolution in the config UI.
+RES_CHOICE   = os.getenv("RES_CHOICE",      "").strip()
+
+_RES_CHOICE_MAP = {
+    "360":  "360p",
+    "480":  "480p",
+    "720":  "720p",
+    "1080": "1080p",
+    "2160": "4K",
+}
 
 SOURCE_FILE  = "./rename_source.mkv"
 THUMBNAIL    = "./rename_thumb.jpg"
@@ -160,7 +171,15 @@ def probe_and_build_name() -> tuple[str, str, list, list]:
         print(f"[rename] ffprobe error: {e}")
         height = 1080
 
-    quality  = detect_quality(height)
+    # If the user explicitly chose a resolution in the config UI, honour it;
+    # otherwise derive quality from the actual source height.
+    if RES_CHOICE and RES_CHOICE in _RES_CHOICE_MAP:
+        quality = _RES_CHOICE_MAP[RES_CHOICE]
+        print(f"[rename] Using user-set quality override: {quality} (res_choice={RES_CHOICE})")
+    else:
+        quality = detect_quality(height)
+        print(f"[rename] Auto-detected quality from height {height}px: {quality}")
+
     filename = build_output_name(
         anime_name   = ANIME_NAME or "Unknown",
         season       = SEASON,
@@ -213,24 +232,38 @@ def remux(output_name: str) -> bool:
     """
     mkvmerge: copy all streams into a new container with the structured filename.
     No transcoding — pure stream copy. Returns True on success.
+
+    Uses a plain temp filename (_remux_tmp.mkv) for the mkvmerge -o target to avoid
+    any shell or filesystem glob-expansion issues with brackets in the final filename,
+    then renames to the structured output name via Python.
     """
-    src   = os.path.abspath(SOURCE_FILE)
-    dst   = os.path.abspath(output_name)
-    fixed = os.path.abspath(f"FIXED_{output_name}")
+    src = os.path.abspath(SOURCE_FILE)
+    dst = os.path.abspath(output_name)
+    # Bracket-free temp name — avoids mkvmerge / shell glob-expansion on names like
+    # "[Anime] [S01-E02] Title [1080p] [Sub].mkv" which can silently corrupt on some
+    # runners.  Python's os.rename is always safe regardless of brackets.
+    tmp = os.path.abspath("_remux_tmp.mkv")
 
     if not os.path.exists(src):
         raise FileNotFoundError(f"Source file missing before remux: {src}")
 
+    # Clean up any leftover tmp from a previous failed run
+    if os.path.exists(tmp):
+        os.remove(tmp)
+
     ret = subprocess.run(
-        ["mkvmerge", "-o", fixed, src],
+        ["mkvmerge", "-o", tmp, src],
         capture_output=True
     )
-    if os.path.exists(fixed) and os.path.getsize(fixed) > 0:
-        os.rename(fixed, dst)
-        if os.path.exists(src): os.remove(src)
+    if os.path.exists(tmp) and os.path.getsize(tmp) > 0:
+        if os.path.exists(src):
+            os.remove(src)
+        os.rename(tmp, dst)
         return True
     # Fallback: simple rename if mkvmerge fails (e.g. non-MKV source)
     print(f"[remux] mkvmerge failed (rc={ret.returncode}), falling back to rename")
+    if os.path.exists(tmp):
+        os.remove(tmp)
     os.rename(src, dst)
     return ret.returncode == 0
 
