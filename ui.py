@@ -36,11 +36,14 @@ def get_download_fail_ui(error_msg):
         f"└────────────────────────────────────┘</code>"
     )
 
-def get_failure_ui(file_name, error_snippet):
+def get_failure_ui(file_name, error_snippet, phase="ENCODE"):
+    phase_icons = {"DOWNLOAD": "📥", "ENCODE": "⚙️", "UPLOAD": "☁️"}
+    icon = phase_icons.get(phase.upper(), "❌")
     return (
         f"<code>┌─── ⚠️ [ MISSION.CRITICAL.FAILURE ] ───┐\n"
         f"│                                    \n"
         f"│ 📂 FILE: {file_name}\n"
+        f"│ {icon} PHASE: {phase.upper()} FAILED\n"
         f"│ ❌ ERROR DETECTED:\n"
         f"│ {error_snippet[:200]}\n"
         f"│                                    \n"
