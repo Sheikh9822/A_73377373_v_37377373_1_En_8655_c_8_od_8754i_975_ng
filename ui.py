@@ -2,7 +2,6 @@ import time
 from datetime import timedelta
 import os
 from pyrogram import enums
-from pyrogram.errors import FloodWait
 
 last_up_update = 0
 
@@ -106,15 +105,15 @@ def get_encode_ui(file_name, speed, fps, elapsed, eta, curr_sec, duration, perce
 async def upload_progress(current, total, app, chat_id, status_msg, file_name):
     global last_up_update
     now = time.time()
-
-    if now - last_up_update < 8:
+    
+    if now - last_up_update < 4:
         return
-
+        
     percent = (current / total) * 100
     bar = generate_progress_bar(percent)
     cur_mb = current / (1024 * 1024)
     tot_mb = total / (1024 * 1024)
-
+    
     scifi_up_ui = (
         f"<code>┌─── 🛰️ [ SYSTEM.UPLINK.ACTIVE ] ───┐\n"
         f"│                                    \n"
@@ -125,13 +124,9 @@ async def upload_progress(current, total, app, chat_id, status_msg, file_name):
         f"│                                    \n"
         f"└────────────────────────────────────┘</code>"
     )
-
+    
     try:
         await app.edit_message_text(chat_id, status_msg.id, scifi_up_ui, parse_mode=enums.ParseMode.HTML)
-        last_up_update = now
-    except FloodWait as e:
-        # Respect the flood wait — skip this update but back off the timer
-        last_up_update = now + e.value
     except Exception:
-        # Any other error (message not found etc.) — still advance timer to avoid hammering
-        last_up_update = now
+        pass
+    last_up_update = now

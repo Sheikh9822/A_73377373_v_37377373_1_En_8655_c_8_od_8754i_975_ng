@@ -1,5 +1,4 @@
 import asyncio
-import json
 import os
 import subprocess
 import time
@@ -7,11 +6,12 @@ import shutil
 import psutil
 from pyrogram import Client, enums
 from pyrogram.errors import FloodWait
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 import config
-from media import get_video_info, get_crop_params, select_params
+from media import get_video_info, get_crop_params, select_params, async_generate_grid, get_vmaf, upload_to_cloud
 from rename import lang_code_to_name
-from ui import get_encode_ui, format_time, get_failure_ui, get_cancelled_ui
+from ui import get_encode_ui, format_time, upload_progress, get_failure_ui, get_cancelled_ui
 from rename import resolve_output_name, format_track_report
 
 
@@ -518,39 +518,118 @@ async def main():
             await tg_notify_failure(tg_state, tg_ready, config.FILE_NAME, error_snippet)
             return
 
-        # 7. WRITE ENCODE RESULTS for upload phase
-        encode_results = {
-            "duration":           duration,
-            "width":              width,
-            "height":             height,
-            "fps_val":            fps_val,
-            "crop_val":           crop_val,
-            "total_mission_time": total_mission_time,
-            "res_label":          res_label,
-            "final_crf":          final_crf,
-            "final_preset":       final_preset,
-            "hdr_label":          hdr_label,
-            "grain_label":        grain_label,
-            "crop_label_txt":     crop_label_txt,
-            "final_audio_bitrate": final_audio_bitrate,
-            "audio_type_label":   audio_type_label,
-            "demo_mode":          demo_mode,
-            "demo_duration":      demo_duration or "",
-            "demo_start":         demo_start,
-            "audio_tracks":       audio_tracks,
-            "sub_tracks":         sub_tracks,
-            "file_name":          config.FILE_NAME,
-        }
-        with open("encode_results.json", "w") as f:
-            json.dump(encode_results, f)
-        with open("output_fname.txt", "w") as f:
-            f.write(config.FILE_NAME)
+        # 7. POST-PROCESSING (Remux)
+        await tg_edit(tg_state, tg_ready, "<b>[ SYSTEM.OPTIMIZE ] Finalizing Metadata...</b>")
+        fixed_file = f"FIXED_{config.FILE_NAME}"
+        mkvmerge_title_args = ["--title", config.ENCODER_TITLE] if config.ENCODER_TITLE.strip() else []
+        subprocess.run([
+            "mkvmerge", "-o", fixed_file,
+            *mkvmerge_title_args,
+            config.FILE_NAME,
+            "--no-video", "--no-audio", "--no-subtitles", "--no-attachments", config.SOURCE
+        ])
+        if os.path.exists(fixed_file):
+            os.remove(config.FILE_NAME)
+            os.rename(fixed_file, config.FILE_NAME)
 
-        await tg_edit(
-            tg_state, tg_ready,
-            f"<b>[ ENCODE.COMPLETE ] ⚙️ {config.FILE_NAME}</b>\n"
-            f"<b>Elapsed: {format_time(total_mission_time)} — Uplink phase starting...</b>"
+        # 8. METRICS + CLOUD UPLOAD (concurrent)
+        final_size = os.path.getsize(config.FILE_NAME) / (1024 * 1024)
+
+        grid_task = asyncio.create_task(async_generate_grid(duration, config.FILE_NAME))
+
+        if config.RUN_UPLOAD:
+            await tg_edit(tg_state, tg_ready, "<b>[ SYSTEM.CLOUD ] Uploading to Gofile...</b>")
+            cloud_task = asyncio.create_task(upload_to_cloud(config.FILE_NAME, app, config.CHAT_ID, status))
+        else:
+            cloud_task = None
+
+        if config.RUN_VMAF:
+            vmaf_val, ssim_val = await get_vmaf(config.FILE_NAME, crop_val, width, height, duration, fps_val)
+        else:
+            vmaf_val, ssim_val = "N/A", "N/A"
+
+        await grid_task
+        cloud = await cloud_task if cloud_task else {"direct": None, "page": None, "source": "disabled"}
+
+        # 9. Build inline buttons from cloud result
+        btn_row = []
+        if cloud["source"] == "gofile":
+            if cloud.get("page"):
+                btn_row.append(InlineKeyboardButton("Gofile", url=cloud["page"]))
+            if cloud.get("direct"):
+                btn_row.append(InlineKeyboardButton("Direct", url=cloud["direct"]))
+        elif cloud["source"] == "litterbox" and cloud.get("direct"):
+            btn_row.append(InlineKeyboardButton("Litterbox", url=cloud["direct"]))
+        buttons = InlineKeyboardMarkup([btn_row]) if btn_row else None
+
+        # 10. FINAL UPLINK
+        if final_size > 2000:
+            await tg_edit(
+                tg_state, tg_ready,
+                "<b>[ SIZE OVERFLOW ]</b> File too large for Telegram. Cloud link below.",
+                reply_markup=buttons,
+            )
+            return
+
+        thumb = config.SCREENSHOT if os.path.exists(config.SCREENSHOT) else None
+
+        crop_label_report = " | Cropped" if crop_val else ""
+        track_report = format_track_report(audio_tracks, sub_tracks)
+
+        # Append user-supplied track label notes if provided
+        user_track_notes = ""
+        if config.SUB_TRACKS and config.SUB_TRACKS.strip():
+            user_track_notes += f"\n🔤 <b>SUB LABELS:</b>  <code>{config.SUB_TRACKS}</code>"
+        if config.AUDIO_TRACKS and config.AUDIO_TRACKS.strip():
+            user_track_notes += f"\n🔊 <b>AUDIO LABELS:</b> <code>{config.AUDIO_TRACKS}</code>"
+
+        audio_mode_line = (
+            f"{audio_type_label.upper()} ({config.AUDIO_MODE.upper()} @ {final_audio_bitrate})"
+            if audio_type_label
+            else f"{config.AUDIO_MODE.upper()} @ {final_audio_bitrate}"
         )
+        content_line = f"└ Type: {config.CONTENT_TYPE}\n" if config.CONTENT_TYPE else ""
+        demo_report_line = (
+            f"⚡ <b>DEMO MODE:</b> <code>{demo_duration}s from {demo_start}</code>\n"
+            if demo_mode else ""
+        )
+        report = (
+            f"✅ <b>MISSION ACCOMPLISHED</b>\n\n"
+            f"📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>\n"
+            f"⏱ <b>TIME:</b> <code>{format_time(total_mission_time)}</code>\n"
+            f"⏳<b>DURATION:</b> <code>{format_time(duration)}</code>\n"
+            f"📦 <b>SIZE:</b> <code>{final_size:.2f} MB</code>\n"
+            f"📊 <b>QUALITY:</b> VMAF: <code>{vmaf_val}</code> | SSIM: <code>{ssim_val}</code>\n\n"
+            f"🛠 <b>SPECS:</b>\n"
+            f"└ Preset: {final_preset} | CRF: {final_crf}\n"
+            f"└ Video: {res_label}{crop_label_report} | {hdr_label}{grain_label}\n"
+            f"└ Audio: {audio_mode_line}\n"
+            f"{content_line}"
+            f"{demo_report_line}"
+            f"\n{track_report}"
+            f"{user_track_notes}"
+        )
+
+        import ui as _ui; _ui.last_up_pct = -1; _ui.last_up_update = 0; _ui.up_start_time = 0
+
+        await tg_edit(tg_state, tg_ready, "<b>[ SYSTEM.UPLINK ] Transmitting Final Video...</b>")
+
+        await app.send_document(
+            chat_id=config.CHAT_ID,
+            document=config.FILE_NAME,
+            thumb=thumb,
+            caption=report,
+            parse_mode=enums.ParseMode.HTML,
+            reply_markup=buttons,
+            progress=upload_progress,
+            progress_args=(app, config.CHAT_ID, status, config.FILE_NAME),
+        )
+
+        # CLEANUP
+        try: await status.delete()
+        except: pass
+        for f in [config.SOURCE, config.FILE_NAME, config.LOG_FILE, config.SCREENSHOT]:
+            if os.path.exists(f): os.remove(f)
 
     except Exception as exc:
         import traceback
