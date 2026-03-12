@@ -201,6 +201,18 @@ def parse_from_filename(raw_filename: str) -> dict | None:
     except ValueError:
         season = 1
 
+    # anitopy often includes a trailing season number in the title instead of
+    # parsing it as anime_season. e.g. "Hibike! Euphonium 3" → season=3, title="Hibike! Euphonium"
+    # Only do this when anitopy itself didn't detect a season (season == 1 from default).
+    if season == 1:
+        m = re.match(r'^(.+?)\s+(\d{1,2})$', anime_name)
+        if m:
+            candidate_season = int(m.group(2))
+            # Sanity check: season 2–9 is plausible, but "Evangelion 1.11" should stay as-is
+            if 2 <= candidate_season <= 9:
+                anime_name = m.group(1).strip()
+                season     = candidate_season
+
     # Episode — default 1 if not present
     raw_ep = p.get("episode_number", "1") or "1"
     # anitopy may return "23β" or "01-12" — take leading digits
