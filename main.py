@@ -336,8 +336,8 @@ async def main():
     res_label = res_label or f"Original({detect_quality(height)})"
 
     # -- AUDIO CONFIGURATION --
-    audio_cmd           = ["-af", "aformat=channel_layouts=stereo", "-c:a", "libopus", "-b:a", "32k", "-vbr", "on"]
-    final_audio_bitrate = "32k"
+    final_audio_bitrate = config.AUDIO_BITRATE if (config.AUDIO_BITRATE and config.AUDIO_BITRATE.strip()) else "32k"
+    audio_cmd           = ["-af", "aformat=channel_layouts=stereo", "-c:a", "libopus", "-b:a", final_audio_bitrate, "-vbr", "on"]
 
     # -- SVT-AV1 PARAMETERS --
     # pin=0 is required for GitHub Actions (virtualized VMs don't honour CPU affinity).
