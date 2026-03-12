@@ -101,7 +101,12 @@ jobs:
             sudo ldconfig
           else
             echo "📥 Installing apt tools..."
-            sudo apt-get update && sudo apt-get install -y aria2 mkvtoolnix curl tesseract-ocr tesseract-ocr-jpn tesseract-ocr-eng
+            # Add official MKVToolNix repo (apt default is too old, missing libmatroska.so.7)
+            sudo apt-get install -y gnupg wget curl
+            wget -q https://mkvtoolnix.download/gpg-pub-myriam.asc -O /tmp/mkvtoolnix.asc
+            sudo gpg --dearmor -o /usr/share/keyrings/mkvtoolnix.gpg /tmp/mkvtoolnix.asc
+            echo "deb [arch=amd64 signed-by=/usr/share/keyrings/mkvtoolnix.gpg] https://mkvtoolnix.download/ubuntu/ $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/mkvtoolnix.list
+            sudo apt-get update && sudo apt-get install -y aria2 mkvtoolnix tesseract-ocr tesseract-ocr-jpn tesseract-ocr-eng tesseract-ocr-chi-sim tesseract-ocr-chi-tra
             mkdir -p /tmp/apt-cache/bin /tmp/apt-cache/lib
             cp $(which aria2c) /tmp/apt-cache/bin/
             cp $(which mkvmerge) /tmp/apt-cache/bin/
