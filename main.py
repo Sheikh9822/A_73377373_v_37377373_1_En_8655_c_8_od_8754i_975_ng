@@ -457,50 +457,27 @@ async def main():
         if not _is_pgs(st.get("codec", "")):
             continue
 
-        lang = st.get("lang", "und").lower()
+        print(f"[pgs] PGS track s:{sub_idx} (lang: {st['lang']}, title: '{st['title']}') — OCR starting...")
+        srt_path = _ocr_pgs_track(sub_idx, st["lang"])
 
-        # Always exclude the original PGS bitmap stream from output
+        # Always exclude the original PGS stream from output
         pgs_exclusions += ["-map", f"-0:s:{sub_idx}"]
 
-        if lang == "eng":
-            # English PGS → OCR to SRT → convert to ASS → mux as text track
-            print(f"[pgs] PGS s:{sub_idx} lang=eng — OCR to ASS...")
-            srt_path = _ocr_pgs_track(sub_idx, "eng")
-            if srt_path:
-                # Convert SRT → ASS with ffmpeg
-                ass_path = srt_path.replace(".srt", ".ass")
-                try:
-                    conv = subprocess.run(
-                        ["ffmpeg", "-i", srt_path, "-y", ass_path],
-                        capture_output=True, timeout=60
-                    )
-                    if conv.returncode == 0 and os.path.exists(ass_path):
-                        ffmpeg_input_idx = 1 + len(ocr_inputs) // 2
-                        ocr_inputs += ["-i", ass_path]
-                        ocr_maps   += ["-map", f"{ffmpeg_input_idx}:s"]
-                        lang_name   = st["title"].strip() if st.get("title", "").strip() else lang_code_to_name(st["lang"])
-                        ocr_meta   += [f"-metadata:s:s:{ocr_out_idx}", f"title={lang_name}"]
-                        ocr_srt_files.append(srt_path)
-                        ocr_srt_files.append(ass_path)
-                        print(f"[pgs] ENG PGS → ASS s:{ocr_out_idx} title='{lang_name}'")
-                        ocr_out_idx += 1
-                    else:
-                        print(f"[pgs] SRT→ASS conversion failed — track dropped")
-                except Exception as e:
-                    print(f"[pgs] SRT→ASS error: {e} — track dropped")
-                finally:
-                    try:
-                        os.remove(srt_path)
-                    except Exception:
-                        pass
-            else:
-                print(f"[pgs] ENG PGS OCR failed — track dropped")
+        if srt_path:
+            # Input index in ffmpeg: 1-based after the main source (input 0)
+            ffmpeg_input_idx = 1 + len(ocr_inputs) // 2
+            ocr_inputs += ["-i", srt_path]
+            ocr_maps   += ["-map", f"{ffmpeg_input_idx}:s"]
+            lang_name   = lang_code_to_name(st["lang"]) + " (Signs)"
+            ocr_meta   += [f"-metadata:s:s:{ocr_out_idx}", f"title={lang_name}"]
+            ocr_srt_files.append(srt_path)
+            print(f"[pgs] OCR track will be output as s:{ocr_out_idx} title='{lang_name}'")
+            ocr_out_idx += 1
         else:
-            # Non-English PGS — strip silently
-            print(f"[pgs] PGS s:{sub_idx} lang={lang} — stripped")
+            print(f"[pgs] s:{sub_idx} OCR failed — track dropped")
 
     if pgs_exclusions:
-        print(f"[encode] {len(pgs_exclusions)//2} PGS bitmap track(s) removed ({len(ocr_srt_files)//2} converted to ASS)")
+        print(f"[encode] {len(pgs_exclusions)//2} PGS track(s) → {len(ocr_srt_files)} OCR'd to SRT")
 
     # -- SUBTITLE TITLE RENAME --
     # Set each kept native (non-PGS) subtitle track's title to its language name.
@@ -508,7 +485,7 @@ async def main():
     out_sub_idx = 0
     for st in sub_tracks:
         if _is_pgs(st.get("codec", "")):
-            continue   # all PGS removed — either stripped or replaced by ASS via ocr_meta
+            continue
         lang_name = lang_code_to_name(st["lang"])
         sub_title_meta += [f"-metadata:s:s:{out_sub_idx}", f"title={lang_name}"]
         print(f"[encode] Subtitle #s:{out_sub_idx} title set to '{lang_name}' (lang: {st['lang']})")
