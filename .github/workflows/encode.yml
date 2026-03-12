@@ -155,10 +155,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: tg_session_dir
-          key: tg-session-${{ steps.lane.outputs.name }}-${{ github.run_id }}
-          restore-keys: |
-            tg-session-${{ steps.lane.outputs.name }}-
-            tg-session-
+          key: tg-session-${{ steps.lane.outputs.name }}
 
       - name: 🔑 Authorize Bot Session
         run: |
@@ -338,4 +335,4 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: tg_session_dir
-          key: tg-session-${{ steps.lane.outputs.name }}-${{ github.run_id }}
+          key: tg-session-${{ steps.lane.outputs.name }}
