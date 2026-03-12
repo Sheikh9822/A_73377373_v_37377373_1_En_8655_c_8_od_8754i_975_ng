@@ -1,12 +1,16 @@
 """
 resolve_filename.py
 Given a URL as argv[1], print the best human-readable filename.
-Priority: filename= query param → Content-Disposition header → URL path segment.
+
+Priority:
+  1. filename= / file= query param
+  2. Content-Disposition header via curl -sL (follows redirects)
+  3. URL path segment fallback
 """
 import sys
 import re
+import subprocess
 import urllib.parse
-import urllib.request
 
 url = sys.argv[1]
 
@@ -17,19 +21,27 @@ if fn:
     print(urllib.parse.unquote(fn))
     sys.exit()
 
-# 2. Content-Disposition header (CDN signed URLs like tb-cdn, bunny, etc.)
+# 2. Content-Disposition via curl (follows redirects, same as manual test)
 try:
-    req = urllib.request.Request(
-        url, method="HEAD",
-        headers={"User-Agent": "Mozilla/5.0"}
+    result = subprocess.run(
+        ["curl", "-sL", "-D", "-", "-o", "/dev/null",
+         "--max-time", "10", "--user-agent", "Mozilla/5.0", url],
+        capture_output=True, text=True, timeout=15
     )
-    with urllib.request.urlopen(req, timeout=10) as r:
-        cd = r.headers.get("Content-Disposition", "")
-    # Handles:  filename="Foo.mkv"  and  filename*=UTF-8''Foo.mkv
-    m = re.search(r"filename\*?=(?:UTF-8'')?\"?([^\";\r\n]+)", cd, re.IGNORECASE)
+    headers = result.stdout
+
+    # filename*=UTF-8''Foo%20Bar.mkv  (RFC 5987)
+    m = re.search(r"filename\*=UTF-8''([^\r\n;\"]+)", headers, re.IGNORECASE)
     if m:
-        print(urllib.parse.unquote(m.group(1).strip(' "')))
+        print(urllib.parse.unquote(m.group(1).strip()))
         sys.exit()
+
+    # filename="Foo%20Bar.mkv" or filename=Foo%20Bar.mkv
+    m = re.search(r'filename="?([^"\r\n;]+)"?', headers, re.IGNORECASE)
+    if m:
+        print(urllib.parse.unquote(m.group(1).strip()))
+        sys.exit()
+
 except Exception:
     pass
 
