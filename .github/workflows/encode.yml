@@ -112,9 +112,9 @@ jobs:
             pip install --user -r requirements.txt pyrogram tgcrypto yt-dlp
           else
             echo "📦 Python packages restored from cache."
-            # Verify critical binaries are available after cache restore
-            if ! command -v yt-dlp &>/dev/null; then
-              echo "⚠️ yt-dlp binary missing from cache, reinstalling..."
+            # Verify yt-dlp module is importable (binary shebang can break across runners)
+            if ! python3 -c "import yt_dlp" &>/dev/null; then
+              echo "⚠️ yt-dlp module missing from cache, reinstalling..."
               pip install --user yt-dlp
             fi
           fi
@@ -206,7 +206,7 @@ jobs:
             fi
 
             if [[ "$URL" == *.m3u8* ]] || [[ "$URL" == *m3u8* ]]; then
-              yt-dlp \
+              python3 -m yt_dlp \
                 --downloader aria2c \
                 --downloader-args "aria2c:-x 16 -s 16 -k 1M --console-log-level=warn --summary-interval=10" \
                 --user-agent "Mozilla/5.0" \
