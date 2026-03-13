@@ -496,7 +496,7 @@ async def main():
                     milestone   = int(percent // 1) * 1
                     now         = time.time()
                     pct_crossed = milestone > last_progress_pct
-                    time_due    = now - last_update_time >= 10
+                    time_due    = now - last_update_time >= 20
 
                     scifi_ui     = get_encode_ui(
                         config.FILE_NAME, speed, fps, elapsed, eta,
