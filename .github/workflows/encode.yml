@@ -112,9 +112,9 @@ jobs:
             pip install --user -r requirements.txt pyrogram tgcrypto yt-dlp
           else
             echo "📦 Python packages restored from cache."
-            # Verify yt-dlp module is importable (binary shebang can break across runners)
-            if ! python3 -c "import yt_dlp" &>/dev/null; then
-              echo "⚠️ yt-dlp module missing from cache, reinstalling..."
+            # Verify critical binaries are available after cache restore
+            if ! command -v yt-dlp &>/dev/null; then
+              echo "⚠️ yt-dlp binary missing from cache, reinstalling..."
               pip install --user yt-dlp
             fi
           fi
@@ -205,18 +205,35 @@ jobs:
               FN="${CUSTOM}.mkv"
             fi
 
-            if [[ "$URL" == *.m3u8* ]] || [[ "$URL" == *m3u8* ]]; then
-              python3 -m yt_dlp \
+            if [[ "$URL" == *.m3u8* ]] || [[ "$URL" == *m3u8* ]] || \
+               [[ "$URL" == *youtube.com* ]] || [[ "$URL" == *youtu.be* ]] || \
+               [[ "$URL" == *bilibili.com* ]] || [[ "$URL" == *nicovideo.jp* ]] || \
+               [[ "$URL" == *vimeo.com* ]] || [[ "$URL" == *dailymotion.com* ]] || \
+               [[ "$URL" == *twitch.tv* ]]; then
+              # HLS / streaming platform — yt-dlp with aria2c as external downloader
+              yt-dlp \
                 --downloader aria2c \
-                --downloader-args "aria2c:-x 16 -s 16 -k 1M --console-log-level=warn --summary-interval=10" \
+                --downloader-args "aria2c:-x 16 -s 16 -k 1M --console-log-level=warn --summary-interval=10 --retry-wait=5 --max-tries=10" \
                 --user-agent "Mozilla/5.0" \
                 --merge-output-format mkv \
                 -o "source.mkv" \
                 "$URL" 2>&1 | tee download.log
             else
-              aria2c -x 16 -s 16 -k 1M --user-agent="Mozilla/5.0" \
-                --console-log-level=warn --summary-interval=10 \
-                -o "source.mkv" "$URL" 2>&1 | tee download.log
+              # Direct CDN / file URL
+              # Pre-resolve redirects so aria2c gets the clean final URL,
+              # which allows proper multi-connection splitting on token-signed CDNs.
+              echo "🔗 Resolving final URL..."
+              FINAL_URL=$(curl -s -o /dev/null -w "%{url_effective}" -L \
+                --user-agent "Mozilla/5.0" "$URL")
+              echo "✅ Resolved: $FINAL_URL"
+
+              yt-dlp \
+                --downloader aria2c \
+                --downloader-args "aria2c:-x 16 -s 16 -k 1M --console-log-level=warn --summary-interval=10 --retry-wait=5 --max-tries=10" \
+                --user-agent "Mozilla/5.0" \
+                --merge-output-format mkv \
+                -o "source.mkv" \
+                "$FINAL_URL" 2>&1 | tee download.log
             fi
             echo "$FN" > tg_fname.txt
           fi
