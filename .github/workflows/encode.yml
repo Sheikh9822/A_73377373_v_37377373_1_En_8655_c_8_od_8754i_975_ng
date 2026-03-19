@@ -266,7 +266,7 @@ jobs:
               echo "✅ Key fetched ($(wc -c < /tmp/hls.key) bytes)"
             fi
 
-            # ── Step 2: Parse manifest → aria2c input list (Python, no HTTP) ──
+            # ── Step 2: Parse manifest → aria2c input list + IV info ───────
             echo "$M3U8_CONTENT" > /tmp/hls_manifest.txt
             python3 hls_parse.py /tmp/hls_manifest.txt "$BASE_URL" "$REFERER"
 
@@ -282,16 +282,39 @@ jobs:
               --summary-interval=10 \
               2>&1 | tee download.log
 
-            # ── Step 4: Build local m3u8 pointing to downloaded segments ──────
-            # ffmpeg handles AES-128 decryption natively using the pre-fetched key
-            echo "📦 Building local m3u8 and muxing..."
-            python3 hls_localmux.py "$URL" "$REFERER"
+            # ── Step 4: Decrypt with openssl (no Python crypto lib needed) ────
+            METHOD=$(cat /tmp/hls_method.txt 2>/dev/null || echo "NONE")
+            echo "🔓 Decrypting $METHOD segments with openssl..."
 
-            ffmpeg -allowed_extensions ALL \
-              -protocol_whitelist "file,crypto,data,http,https,tcp,tls" \
-              -i /tmp/hls_local.m3u8 \
-              -c copy source.mkv -y 2>&1
+            SEG_DIR="/tmp/hls_segs"
+            DEC_DIR="/tmp/hls_dec"
+            mkdir -p "$DEC_DIR"
 
+            if [ "$METHOD" = "AES-128" ] && [ -f /tmp/hls.key ]; then
+              KEY_HEX=$(xxd -p /tmp/hls.key | tr -d '\n')
+              SEQ_START=$(cat /tmp/hls_seq_start.txt 2>/dev/null || echo "0")
+              i=0
+              for seg in $(ls "$SEG_DIR"/seg_*.ts | sort); do
+                SEQ=$(( SEQ_START + i ))
+                # IV = sequence number as 32-char hex (16 bytes big-endian)
+                IV_HEX=$(printf "%032x" "$SEQ")
+                # Check if explicit IV was saved for this segment
+                IV_FILE="/tmp/hls_iv_${i}.hex"
+                [ -f "$IV_FILE" ] && IV_HEX=$(cat "$IV_FILE")
+                openssl enc -d -aes-128-cbc -nosalt \
+                  -K "$KEY_HEX" -iv "$IV_HEX" \
+                  -in "$seg" -out "$DEC_DIR/seg_$(printf '%05d' $i).ts" 2>/dev/null
+                i=$(( i + 1 ))
+              done
+              echo "✅ Decrypted $i segments"
+              cat "$DEC_DIR"/seg_*.ts > source.ts
+            else
+              cat "$SEG_DIR"/seg_*.ts > source.ts
+              echo "✅ Merged (no encryption)"
+            fi
+
+            echo "📦 Muxing to MKV..."
+            ffmpeg -i source.ts -c copy source.mkv -y 2>&1
             rm -f source.ts
 
             echo "$FN" > tg_fname.txt
