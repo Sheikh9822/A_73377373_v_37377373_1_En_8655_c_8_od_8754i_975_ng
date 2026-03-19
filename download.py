@@ -94,13 +94,18 @@ def download_m3u8(url):
     print("📡 M3U8 detected — yt-dlp + aria2c parallel download", flush=True)
     referer = detect_referer(url)
 
+    aria2c_args = (
+        "-x 16 -s 16 -k 1M --console-log-level=warn "
+        "--summary-interval=10 --retry-wait=5 --max-tries=10"
+    )
+    if referer:
+        aria2c_args += f" --header='Referer: {referer}' --header='User-Agent: Mozilla/5.0'"
+
     cmd = [
         "yt-dlp",
         "--add-header", "User-Agent: Mozilla/5.0",
         "--downloader", "aria2c",
-        "--downloader-args",
-        "aria2c:-x 16 -s 16 -k 1M --console-log-level=warn "
-        "--summary-interval=10 --retry-wait=5 --max-tries=10",
+        "--downloader-args", f"aria2c:{aria2c_args}",
         "--merge-output-format", "mkv",
         "--force-overwrites",
         "--no-continue",
