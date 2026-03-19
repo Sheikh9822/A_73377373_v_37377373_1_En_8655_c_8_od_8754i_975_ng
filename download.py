@@ -245,10 +245,19 @@ def download_m3u8(url):
         raise RuntimeError("No segments found in playlist")
     print(f"📋 Found {len(segments)} segments", flush=True)
 
+    # Step 4: pre-fetch AES keys NOW while tokens are still valid
+    # (key URLs share the same time-limited token as segment URLs)
+    key_cache = {}
+    for _seg_url, key_info in segments:
+        if key_info and key_info["method"] != "NONE" and key_info["uri"]:
+            uri = key_info["uri"]
+            if uri not in key_cache:
+                key_cache[uri] = fetch_aes_key(uri, referer)
+
     with tempfile.TemporaryDirectory(prefix="hls_segs_") as tmp_dir:
         out_dir = Path(tmp_dir)
 
-        # Step 4: download ALL segments simultaneously before tokens expire
+        # Step 5: download ALL segments simultaneously before tokens expire
         input_file = build_aria2c_input(segments, referer, out_dir)
         print(f"⚡ Firing all {len(segments)} segments simultaneously…", flush=True)
         run([
@@ -266,8 +275,7 @@ def download_m3u8(url):
             "--auto-file-renaming=false",
         ])
 
-        # Step 5: decrypt AES-128 segments if needed
-        key_cache = {}
+        # Step 6: decrypt AES-128 segments using pre-fetched keys
         for idx, (seg_url, key_info) in enumerate(segments):
             if not key_info or key_info["method"] == "NONE":
                 continue
@@ -292,7 +300,7 @@ def download_m3u8(url):
 
             decrypt_segment(seg_path, key_bytes, iv_bytes)
 
-        # Step 6: build ffmpeg concat list
+        # Step 7: build ffmpeg concat list
         seg_paths = sorted(out_dir.glob("seg_*.ts"))
         if not seg_paths:
             raise RuntimeError("No .ts segments found after download")
@@ -300,7 +308,7 @@ def download_m3u8(url):
         concat_file = out_dir / "concat.txt"
         concat_file.write_text("\n".join(f"file '{p}'" for p in seg_paths))
 
-        # Step 7: mux into final MKV
+        # Step 8: mux into final MKV
         print(f"🎬 Muxing {len(seg_paths)} segments → source.mkv…", flush=True)
         run([
             "ffmpeg", "-y",
