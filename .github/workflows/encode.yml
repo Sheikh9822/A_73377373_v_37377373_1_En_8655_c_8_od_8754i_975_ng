@@ -266,7 +266,6 @@ jobs:
             done
 
             # ── Step 1: Parse m3u8, fetch key, write aria2c input list ───────
-            pip install --quiet --user pycryptodome 2>/dev/null || true
             python3 /dev/stdin "$URL" "$REFERER" << 'HLS_PARSE'
 import sys, os, re, struct, urllib.request
 
@@ -347,7 +346,10 @@ print(f"🧩 {len(segs)} segments | encryption={method}")
 
 with open("source.ts", "wb") as out:
     if method == "AES-128" and os.path.exists(key_path):
-        from Crypto.Cipher import AES
+        try:
+            from Cryptodome.Cipher import AES
+        except ImportError:
+            from Crypto.Cipher import AES
         key    = open(key_path, "rb").read()
         iv_fix = open("/tmp/hls_iv.bin", "rb").read() if os.path.exists("/tmp/hls_iv.bin") else None
         for i, seg in enumerate(segs):
