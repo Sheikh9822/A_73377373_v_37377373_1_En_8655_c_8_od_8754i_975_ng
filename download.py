@@ -75,14 +75,58 @@ def detect_referer(url):
     return ""
 
 
-def curl_fetch(url, referer=""):
-    """Fetch URL bytes via curl (shell=True keeps headers identical to browser)."""
-    ref_arg = f'-H "Referer: {referer}"' if referer else ""
-    cmd = f'curl -sL --fail -A "{USER_AGENT}" {ref_arg} "{url}"'
+def curl_fetch(url, referer="", extra_headers=None):
+    """Fetch URL bytes via curl. Returns (bytes, http_status_code)."""
+    ref_arg    = f'-H "Referer: {referer}"' if referer else ""
+    extra_args = ""
+    if extra_headers:
+        extra_args = " ".join(f'-H "{k}: {v}"' for k, v in extra_headers.items())
+    cmd = (
+        f'curl -sL --fail -w "\\n%{{http_code}}" '
+        f'-A "{USER_AGENT}" {ref_arg} {extra_args} "{url}"'
+    )
     result = subprocess.run(cmd, shell=True, capture_output=True)
+    # Last line is the HTTP status written by -w
+    *body_parts, status_line = result.stdout.rsplit(b"\n", 1)
+    body   = b"\n".join(body_parts)
+    status = int(status_line.strip()) if status_line.strip().isdigit() else 0
     if result.returncode != 0:
-        raise RuntimeError(f"curl failed for {url}")
-    return result.stdout
+        raise RuntimeError(f"curl failed (HTTP {status}) for {url}")
+    return body
+
+
+def fetch_aes_key(uri, referer):
+    """
+    Fetch an HLS AES-128 key, trying several header strategies.
+    Key servers often have stricter CORS/referer rules than segment CDNs.
+    """
+    origin = referer.rstrip("/") if referer else ""
+    strategies = [
+        # 1. Referer + Origin (most permissive for key servers)
+        {"Referer": referer, "Origin": origin} if referer else {},
+        # 2. No Referer at all (key server may whitelist bare requests)
+        {},
+        # 3. Referer only (original behaviour)
+        {"Referer": referer} if referer else {},
+        # 4. Origin only
+        {"Origin": origin} if origin else {},
+    ]
+
+    last_err = None
+    for i, headers in enumerate(strategies):
+        ref  = headers.pop("Referer", "")
+        try:
+            data = curl_fetch(uri, referer=ref, extra_headers=headers or None)
+            if data and len(data) >= 16:          # AES-128 key must be 16 bytes
+                print(f"🔑 Key fetched (strategy {i+1}): {uri}", flush=True)
+                return data
+            print(f"⚠️  Strategy {i+1} returned short/empty body ({len(data)}B), trying next…",
+                  flush=True)
+        except RuntimeError as e:
+            print(f"⚠️  Strategy {i+1} failed: {e}", flush=True)
+            last_err = e
+
+    raise RuntimeError(f"All key-fetch strategies exhausted for {uri}") from last_err
 
 
 # ── M3U8 parallel downloader ───────────────────────────────────────────────
@@ -236,7 +280,7 @@ def download_m3u8(url):
             key_uri = key_info["uri"]
             if key_uri not in key_cache:
                 print(f"🔑 Fetching AES key: {key_uri}", flush=True)
-                key_cache[key_uri] = curl_fetch(key_uri, referer)
+                key_cache[key_uri] = fetch_aes_key(key_uri, referer)
 
             key_bytes = key_cache[key_uri]
 
