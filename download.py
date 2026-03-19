@@ -142,36 +142,36 @@ def download_m3u8(url):
     print(f"🔓 Decrypting {method} segments with openssl...", flush=True)
 
     if method == "AES-128" and Path("/tmp/hls.key").exists():
-        key_hex   = subprocess.check_output(
-            ["xxd", "-p", "/tmp/hls.key"]
-        ).decode().replace("\n", "")
+        try:
+            from Cryptodome.Cipher import AES as _AES
+        except ImportError:
+            from Crypto.Cipher import AES as _AES
+
+        key       = Path("/tmp/hls.key").read_bytes()
         seq_start = int(Path("/tmp/hls_seq_start.txt").read_text().strip()
                         if Path("/tmp/hls_seq_start.txt").exists() else "0")
+        segments  = sorted(seg_dir.glob("seg_*.ts"))
 
-        segments = sorted(seg_dir.glob("seg_*.ts"))
-        failed = 0
-        for i, seg in enumerate(segments):
-            iv_file = Path(f"/tmp/hls_iv_{i}.hex")
-            iv_hex  = iv_file.read_text().strip() if iv_file.exists() \
-                      else f"{seq_start + i:032x}"
-            result = subprocess.run([
-                "openssl", "enc", "-d", "-aes-128-cbc", "-nosalt", "-nopad",
-                "-K", key_hex, "-iv", iv_hex,
-                "-in", str(seg),
-                "-out", str(dec_dir / f"seg_{i:05d}.ts"),
-            ], capture_output=True)
-            if result.returncode != 0:
-                err = result.stderr.decode().strip()
-                print(f"⚠️  seg_{i:05d} failed: {err}", flush=True)
-                failed += 1
+        with open("source.ts", "wb") as out:
+            for i, seg in enumerate(segments):
+                iv_file = Path(f"/tmp/hls_iv_{i}.hex")
+                if iv_file.exists():
+                    iv = bytes.fromhex(iv_file.read_text().strip())
+                else:
+                    iv = (seq_start + i).to_bytes(16, "big")
 
-        if failed > 0:
-            raise RuntimeError(f"openssl decryption failed on {failed}/{len(segments)} segments")
+                data = seg.read_bytes()
+                dec  = _AES.new(key, _AES.MODE_CBC, iv).decrypt(data)
+
+                # Strip PKCS7 padding only on last segment
+                if i == len(segments) - 1:
+                    pad = dec[-1]
+                    if 1 <= pad <= 16:
+                        dec = dec[:-pad]
+
+                out.write(dec)
 
         print(f"✅ Decrypted {len(segments)} segments", flush=True)
-        with open("source.ts", "wb") as out:
-            for f in sorted(dec_dir.glob("seg_*.ts")):
-                out.write(f.read_bytes())
     else:
         with open("source.ts", "wb") as out:
             for f in sorted(seg_dir.glob("seg_*.ts")):
