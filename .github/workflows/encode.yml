@@ -62,6 +62,7 @@ on:
         description: 'Demo Duration in seconds (leave blank for full encode)'
         default: ''
 
+
 permissions:
   actions: write
   contents: read
@@ -228,7 +229,6 @@ jobs:
 
           # ── Streaming platforms / HLS → yt-dlp ──────────────────────────
           elif [[ "$URL" == *.m3u8* ]] || [[ "$URL" == *m3u8* ]] || \
-               [[ "$URL" == *youtube.com* ]] || [[ "$URL" == *youtu.be* ]] || \
                [[ "$URL" == *bilibili.com* ]] || [[ "$URL" == *nicovideo.jp* ]] || \
                [[ "$URL" == *vimeo.com* ]] || [[ "$URL" == *dailymotion.com* ]] || \
                [[ "$URL" == *twitch.tv* ]]; then
@@ -250,29 +250,29 @@ jobs:
 
             echo "📡 Streaming URL detected — using yt-dlp"
 
-            # GitHub Actions IPs are flagged by YouTube's web player bot-check.
-            # Using ios+mweb clients bypasses both the JS runtime requirement
-            # and the "Sign in to confirm you're not a bot" error entirely.
-            # For non-YouTube URLs these flags are a no-op.
-            YT_EXTRA_ARGS=""
-            if [[ "$URL" == *youtube.com* ]] || [[ "$URL" == *youtu.be* ]]; then
-              YT_EXTRA_ARGS="--extractor-args youtube:player_client=ios,mweb --no-check-certificates"
-              echo "🎯 YouTube detected — using iOS/mweb client (bypasses bot check)"
-            fi
-
-            # Optional: stored YouTube cookies (secret: YT_COOKIES_B64)
-            # Export youtube.com cookies as Netscape format, base64-encode the file,
-            # and store it as a repo secret named YT_COOKIES_B64 for extra reliability.
-            COOKIE_ARG=""
-            if [ -n "$YT_COOKIES_B64" ]; then
-              echo "$YT_COOKIES_B64" | base64 -d > /tmp/yt_cookies.txt
-              COOKIE_ARG="--cookies /tmp/yt_cookies.txt"
-              echo "🍪 YouTube cookies loaded from secret"
-            fi
+            # ── Auto-detect Referer from CDN domain ──────────────────────────
+            REFERER_ARG=""
+            declare -A CDN_REFERER_MAP=(
+              ["uwucdn.top"]="https://kwik.cx/"
+              ["kwik.cx"]="https://kwik.cx/"
+              ["animefever"]="https://animefever.tv/"
+              ["cache.libria.fun"]="https://www.anilibria.tv/"
+              ["delivery.animepahe"]="https://animepahe.ru/"
+              ["moon-cdn"]="https://gogoanime.cl/"
+              ["gogo-cdn"]="https://gogoanime.cl/"
+            )
+            for CDN_DOMAIN in "${!CDN_REFERER_MAP[@]}"; do
+              if [[ "$URL" == *"$CDN_DOMAIN"* ]]; then
+                REFERER="${CDN_REFERER_MAP[$CDN_DOMAIN]}"
+                REFERER_ARG="--referer '$REFERER'"
+                echo "🔗 Auto-detected referer: $REFERER (matched: $CDN_DOMAIN)"
+                break
+              fi
+            done
 
             yt-dlp \
-              $YT_EXTRA_ARGS \
-              $COOKIE_ARG \
+              $REFERER_ARG \
+              --add-header 'User-Agent:Mozilla/5.0' \
               --downloader aria2c \
               --downloader-args "aria2c:-x 16 -s 16 -k 1M --console-log-level=warn --summary-interval=10 --retry-wait=5 --max-tries=10" \
               --merge-output-format mkv \
