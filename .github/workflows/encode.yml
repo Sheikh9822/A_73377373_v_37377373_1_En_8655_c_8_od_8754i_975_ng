@@ -90,16 +90,6 @@ jobs:
           key: pip-packages-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
 
       # ─────────────────────────────────────────────────────────────────────
-      # CACHE: yt-dlp standalone binary
-      # ─────────────────────────────────────────────────────────────────────
-      - name: 📦 Cache yt-dlp Binary
-        id: ytdlp-cache
-        uses: actions/cache@v4
-        with:
-          path: /usr/local/bin/yt-dlp
-          key: yt-dlp-standalone-${{ runner.os }}-${{ hashFiles('.github/workflows/encode.yml') }}
-
-      # ─────────────────────────────────────────────────────────────────────
       # CACHE: FFmpeg binary
       # ─────────────────────────────────────────────────────────────────────
       - name: 📦 Cache FFmpeg Binary
@@ -122,32 +112,21 @@ jobs:
       # occurs when a pip-installed yt-dlp script shebang points to a
       # Python interpreter path that no longer exists on the runner.
       # ─────────────────────────────────────────────────────────────────────
-      - name: ⬇️ Install yt-dlp Standalone Binary
-        if: steps.ytdlp-cache.outputs.cache-hit != 'true'
-        run: |
-          curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
-            -o /usr/local/bin/yt-dlp
-          chmod +x /usr/local/bin/yt-dlp
-          echo "✅ yt-dlp $(yt-dlp --version) installed"
-
-      - name: ✅ Verify yt-dlp (cache restore)
-        if: steps.ytdlp-cache.outputs.cache-hit == 'true'
-        run: |
-          chmod +x /usr/local/bin/yt-dlp
-          echo "✅ yt-dlp $(yt-dlp --version) restored from cache"
-
       # ─────────────────────────────────────────────────────────────────────
       # INSTALL: Python library packages (skip if cache hit)
+      # NOTE: yt-dlp installed via pip (not standalone) so it shares the same
+      # Python env and can find pycryptodomex — enables aria2c parallel HLS.
       # ─────────────────────────────────────────────────────────────────────
       - name: 🐍 Install Python Packages
         run: |
           if [ "${{ steps.pip-cache.outputs.cache-hit }}" != "true" ]; then
             echo "📥 Installing Python packages..."
-            pip install --user -r requirements.txt pyrogram tgcrypto pycryptodomex
+            pip install --user -r requirements.txt pyrogram tgcrypto pycryptodomex yt-dlp
           else
             echo "📦 Python packages restored from cache."
           fi
           echo "$HOME/.local/bin" >> $GITHUB_PATH
+          echo "✅ yt-dlp $(yt-dlp --version) ready"
 
       # ─────────────────────────────────────────────────────────────────────
       # INSTALL: FFmpeg (skip if cached)
@@ -227,7 +206,7 @@ jobs:
             echo "❌ ERROR: Magnet links are disabled." | tee download.log
             exit 1
 
-          # ── M3U8 / HLS → aria2c parallel + Python decrypt + ffmpeg mux ──
+          # ── M3U8 / HLS → yt-dlp + aria2c (parallel, pycryptodomex AES) ──
           elif [[ "$URL" == *.m3u8* ]] || [[ "$URL" == *m3u8* ]]; then
 
             # Resolve output filename
@@ -265,10 +244,33 @@ jobs:
               fi
             done
 
-            # ── Step 1: Parse m3u8, fetch key, write aria2c input list ───────
-            python3 hls_parse.py "$URL" "$REFERER"
+            # ── Step 1: Fetch m3u8 manifest + AES key via bash curl ───────────
+            # All HTTP done in bash — curl proven to handle this server correctly
+            BASE_URL="${URL%/*}"
+            M3U8_CONTENT=$(curl -sL \
+              -H "Referer: ${REFERER}" \
+              -H "User-Agent: Mozilla/5.0" \
+              "$URL")
 
-            # ── Step 2: aria2c parallel segment download ──────────────────────
+            KEY_URI=$(echo "$M3U8_CONTENT" | grep -oP '(?<=URI=")[^"]+' | head -1)
+            KEY_METHOD=$(echo "$M3U8_CONTENT" | grep -oP '(?<=METHOD=)[^,\"\r\n]+' | head -1 || echo "NONE")
+            echo "$KEY_METHOD" > /tmp/hls_method.txt
+
+            if [ -n "$KEY_URI" ]; then
+              [[ "$KEY_URI" != http* ]] && KEY_URI="${BASE_URL}/${KEY_URI}"
+              echo "🔑 Fetching key: $KEY_URI"
+              curl -sL \
+                -H "Referer: ${REFERER}" \
+                -H "User-Agent: Mozilla/5.0" \
+                "$KEY_URI" -o /tmp/hls.key
+              echo "✅ Key fetched ($(wc -c < /tmp/hls.key) bytes)"
+            fi
+
+            # ── Step 2: Parse manifest → aria2c input list (Python, no HTTP) ──
+            echo "$M3U8_CONTENT" > /tmp/hls_manifest.txt
+            python3 hls_parse.py /tmp/hls_manifest.txt "$BASE_URL" "$REFERER"
+
+            # ── Step 3: aria2c parallel segment download ──────────────────────
             echo "⬇️ Downloading $(cat /tmp/hls_segcount.txt) segments in parallel..."
             aria2c \
               --input-file=/tmp/hls_aria2.txt \
@@ -280,7 +282,7 @@ jobs:
               --summary-interval=10 \
               2>&1 | tee download.log
 
-            # ── Step 3: Decrypt + merge + mux ────────────────────────────────
+            # ── Step 4: Decrypt + merge ───────────────────────────────────────
             echo "🔓 Decrypting and merging segments..."
             python3 hls_decrypt.py
 
