@@ -100,16 +100,6 @@ jobs:
           key: yt-dlp-standalone-${{ runner.os }}-${{ hashFiles('.github/workflows/encode.yml') }}
 
       # ─────────────────────────────────────────────────────────────────────
-      # CACHE: N_m3u8DL-RE binary (fast parallel HLS downloader)
-      # ─────────────────────────────────────────────────────────────────────
-      - name: 📦 Cache N_m3u8DL-RE Binary
-        id: n-m3u8dl-cache
-        uses: actions/cache@v4
-        with:
-          path: /usr/local/bin/N_m3u8DL-RE
-          key: n-m3u8dl-re-linux64-${{ runner.os }}
-
-      # ─────────────────────────────────────────────────────────────────────
       # CACHE: FFmpeg binary
       # ─────────────────────────────────────────────────────────────────────
       - name: 📦 Cache FFmpeg Binary
@@ -145,26 +135,6 @@ jobs:
         run: |
           chmod +x /usr/local/bin/yt-dlp
           echo "✅ yt-dlp $(yt-dlp --version) restored from cache"
-
-      # ─────────────────────────────────────────────────────────────────────
-      # INSTALL: N_m3u8DL-RE — parallel HLS downloader with AES-128 support
-      # Handles encrypted m3u8 streams natively without ffmpeg fallback
-      # ─────────────────────────────────────────────────────────────────────
-      - name: ⬇️ Install N_m3u8DL-RE
-        if: steps.n-m3u8dl-cache.outputs.cache-hit != 'true'
-        run: |
-          LATEST=$(curl -s https://api.github.com/repos/nilaoda/N_m3u8DL-RE/releases/latest | grep browser_download_url | grep linux-x64 | grep -v sha | cut -d\" -f4)
-          curl -L "$LATEST" -o /tmp/n_m3u8dl.tar.gz
-          tar -xf /tmp/n_m3u8dl.tar.gz -C /tmp
-          sudo mv /tmp/N_m3u8DL-RE /usr/local/bin/N_m3u8DL-RE
-          sudo chmod +x /usr/local/bin/N_m3u8DL-RE
-          echo "✅ N_m3u8DL-RE $(N_m3u8DL-RE --version 2>&1 | head -1) installed"
-
-      - name: ✅ Verify N_m3u8DL-RE (cache restore)
-        if: steps.n-m3u8dl-cache.outputs.cache-hit == 'true'
-        run: |
-          sudo chmod +x /usr/local/bin/N_m3u8DL-RE
-          echo "✅ N_m3u8DL-RE restored from cache"
 
       # ─────────────────────────────────────────────────────────────────────
       # INSTALL: Python library packages (skip if cache hit)
@@ -257,7 +227,7 @@ jobs:
             echo "❌ ERROR: Magnet links are disabled." | tee download.log
             exit 1
 
-          # ── M3U8 / HLS → N_m3u8DL-RE (parallel, AES-128 native) ────────
+          # ── M3U8 / HLS → aria2c parallel + Python decrypt + ffmpeg mux ──
           elif [[ "$URL" == *.m3u8* ]] || [[ "$URL" == *m3u8* ]]; then
 
             # Resolve output filename
@@ -274,9 +244,9 @@ jobs:
               FN="${CUSTOM}.mkv"
             fi
 
-            echo "📡 M3U8 detected — using N_m3u8DL-RE (parallel)"
+            echo "📡 M3U8 detected — aria2c parallel download"
 
-            # ── Auto-detect Referer from CDN domain ──────────────────────────
+            # ── Auto-detect Referer ───────────────────────────────────────────
             declare -A CDN_REFERER_MAP=(
               ["uwucdn.top"]="https://kwik.cx/"
               ["kwik.cx"]="https://kwik.cx/"
@@ -295,48 +265,107 @@ jobs:
               fi
             done
 
-            # ── Pre-fetch AES key with curl (key server checks Referer) ──────
-            # N_m3u8DL-RE fetches the key in an early init step before --header
-            # flags take effect, causing 403. We fetch it manually and pass it
-            # via --key-text-file so N_m3u8DL-RE never needs to request it.
-            KEY_ARG=""
-            BASE_URL=$(dirname "$URL")
-            M3U8_CONTENT=$(curl -s               -H "Referer: ${REFERER}"               -H "User-Agent: Mozilla/5.0"               "$URL")
-            KEY_URI=$(echo "$M3U8_CONTENT" | grep -oP '(?<=URI=")[^"]+' | head -1)
-            if [ -n "$KEY_URI" ]; then
-              # Resolve relative key URLs
-              if [[ "$KEY_URI" != http* ]]; then
-                KEY_URI="${BASE_URL}/${KEY_URI}"
-              fi
-              echo "🔑 Fetching AES key from: $KEY_URI"
-              curl -s                 -H "Referer: ${REFERER}"                 -H "User-Agent: Mozilla/5.0"                 "$KEY_URI" -o /tmp/hls.key
-              if [ -s /tmp/hls.key ]; then
-                KEY_HEX=$(xxd -p /tmp/hls.key | tr -d '\n')
-                echo "$KEY_HEX" > /tmp/hls.key.hex
-                KEY_ARG="--key-text-file /tmp/hls.key.hex"
-                echo "✅ AES key fetched successfully"
-              else
-                echo "⚠️ Key fetch returned empty — will try without key override"
-              fi
-            fi
+            # ── Step 1: Parse m3u8, fetch key, write aria2c input list ───────
+            pip install --quiet --user pycryptodome 2>/dev/null || true
+            python3 /dev/stdin "$URL" "$REFERER" << 'HLS_PARSE'
+import sys, os, re, struct, urllib.request
 
-            # Build args as array
-            N_M3U8_ARGS=(
-              "$URL"
-              --thread-count 16
-              --download-retry-count 5
-              --save-name "source"
-              --save-dir "."
-              --tmp-dir "/tmp/m3u8_tmp"
-              --no-date-info
-              -sv best
-              --mux-after-done format=mkv
-            )
-            [ -n "$REFERER" ] && N_M3U8_ARGS+=(--header "Referer: ${REFERER}")
-            N_M3U8_ARGS+=(--header "User-Agent: Mozilla/5.0")
-            [ -n "$KEY_ARG" ] && N_M3U8_ARGS+=($KEY_ARG)
+m3u8_url = sys.argv[1]
+referer  = sys.argv[2] if len(sys.argv) > 2 else ""
+base_url = m3u8_url.rsplit("/", 1)[0]
+seg_dir  = "/tmp/hls_segs"
+os.makedirs(seg_dir, exist_ok=True)
 
-            N_m3u8DL-RE "${N_M3U8_ARGS[@]}" 2>&1 | tee download.log
+def fetch(url):
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0",
+        "Referer": referer,
+    })
+    with urllib.request.urlopen(req) as r:
+        return r.read()
+
+m3u8   = fetch(m3u8_url).decode()
+lines  = m3u8.splitlines()
+key_bytes, method, iv_default = None, "NONE", None
+
+for line in lines:
+    if line.startswith("#EXT-X-KEY"):
+        m = re.search(r'METHOD=([^,]+)', line)
+        method = m.group(1) if m else "NONE"
+        u = re.search(r'URI="([^"]+)"', line)
+        if u:
+            key_url = u.group(1)
+            if not key_url.startswith("http"):
+                key_url = base_url + "/" + key_url
+            print(f"🔑 Fetching key: {key_url}")
+            key_bytes = fetch(key_url)
+            print(f"✅ Key fetched ({len(key_bytes)} bytes)")
+        iv_m = re.search(r'IV=0x([0-9a-fA-F]+)', line)
+        iv_default = bytes.fromhex(iv_m.group(1).zfill(32)) if iv_m else None
+
+segs = [l for l in lines if l and not l.startswith("#")]
+segs = [s if s.startswith("http") else base_url + "/" + s for s in segs]
+print(f"📋 {len(segs)} segments found")
+
+with open("/tmp/hls_aria2.txt", "w") as f:
+    for i, seg in enumerate(segs):
+        f.write(f"{seg}\n  dir={seg_dir}\n  out=seg_{i:05d}.ts\n")
+        if referer:
+            f.write(f"  header=Referer: {referer}\n  header=User-Agent: Mozilla/5.0\n")
+
+if key_bytes:
+    open("/tmp/hls.key", "wb").write(key_bytes)
+open("/tmp/hls_method.txt", "w").write(method)
+if iv_default:
+    open("/tmp/hls_iv.bin", "wb").write(iv_default)
+open("/tmp/hls_segcount.txt", "w").write(str(len(segs)))
+HLS_PARSE
+
+            # ── Step 2: aria2c parallel segment download ──────────────────────
+            echo "⬇️ Downloading $(cat /tmp/hls_segcount.txt) segments in parallel..."
+            aria2c \
+              --input-file=/tmp/hls_aria2.txt \
+              --max-concurrent-downloads=16 \
+              --split=1 \
+              --retry-wait=3 \
+              --max-tries=5 \
+              --console-log-level=warn \
+              --summary-interval=10 \
+              2>&1 | tee download.log
+
+            # ── Step 3: Decrypt + merge + mux ────────────────────────────────
+            echo "🔓 Decrypting and merging segments..."
+            python3 /dev/stdin << 'HLS_DECRYPT'
+import os, struct
+from pathlib import Path
+
+seg_dir  = "/tmp/hls_segs"
+method   = open("/tmp/hls_method.txt").read().strip() if os.path.exists("/tmp/hls_method.txt") else "NONE"
+key_path = "/tmp/hls.key"
+segs     = sorted(Path(seg_dir).glob("seg_*.ts"))
+print(f"🧩 {len(segs)} segments | encryption={method}")
+
+with open("source.ts", "wb") as out:
+    if method == "AES-128" and os.path.exists(key_path):
+        from Crypto.Cipher import AES
+        key    = open(key_path, "rb").read()
+        iv_fix = open("/tmp/hls_iv.bin", "rb").read() if os.path.exists("/tmp/hls_iv.bin") else None
+        for i, seg in enumerate(segs):
+            data = seg.read_bytes()
+            iv   = iv_fix if iv_fix else struct.pack(">I", i).rjust(16, b"\x00")
+            dec  = AES.new(key, AES.MODE_CBC, iv).decrypt(data)
+            pad  = dec[-1]
+            out.write(dec[:-pad] if 1 <= pad <= 16 else dec)
+        print("✅ Decrypted and merged → source.ts")
+    else:
+        for seg in segs:
+            out.write(seg.read_bytes())
+        print("✅ Merged → source.ts (no encryption)")
+HLS_DECRYPT
+
+            echo "📦 Muxing to MKV..."
+            ffmpeg -i source.ts -c copy source.mkv -y 2>&1
+            rm -f source.ts
 
             echo "$FN" > tg_fname.txt
 
