@@ -4,3 +4,4 @@ yt-dlp
 psutil
 anitopy
 aiohttp
+pycryptodomex
