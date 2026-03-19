@@ -4,12 +4,17 @@ download.py
 Handles all download routing:
   - Telegram file/message links  → tg_handler.py
   - Magnet links                 → disabled (exit 1)
-  - M3U8 / HLS streams           → ffmpeg
+  - M3U8 / HLS streams           → yt-dlp + aria2c (segments) + ffmpeg_i headers (AES key)
   - Streaming platforms          → yt-dlp + aria2c
   - Direct CDN / file URLs       → aria2c
 
 Reads from env: VIDEO_URL, CUSTOM
 Writes: source.mkv, tg_fname.txt, download.log
+
+Why this works for token-expiry CDNs like uwucdn.top:
+  aria2c handles segment downloads with -x 16 parallelism.
+  ffmpeg_i headers ensure the AES key server (mon.key) also receives
+  the correct Referer + User-Agent, preventing the 403 on key fetch.
 """
 
 import os
@@ -80,25 +85,48 @@ def download_telegram():
 
 
 def download_m3u8(url):
-    print("📡 M3U8 detected — ffmpeg download", flush=True)
+    print("📡 M3U8 detected — yt-dlp + aria2c + ffmpeg_i headers", flush=True)
     referer = detect_referer(url)
 
-    headers = f"User-Agent: {USER_AGENT}\r\n"
-    if referer:
-        headers += f"Referer: {referer}\r\n"
+    # aria2c args: parallel segment download
+    aria2c_args = (
+        "-x 16 -s 16 -k 1M "
+        "--console-log-level=warn "
+        "--summary-interval=10 "
+        "--retry-wait=5 "
+        "--max-tries=10"
+    )
 
-    run([
-        "ffmpeg",
-        "-headers", headers,
-        "-i", url,
-        "-c", "copy",
-        "-y",
-        "source.mkv",
-    ])
+    # ffmpeg_i args: passed to ffmpeg when it fetches the AES key (mon.key etc.)
+    # Without these, the key server returns 403 because it checks Referer
+    ffmpeg_i_args = (
+        "-allowed_extensions ALL "
+        "-extension_picky 0 "
+        "-protocol_whitelist file,http,https,tcp,tls,crypto"
+    )
+    if referer:
+        ffmpeg_i_args += f" -headers Referer:\\ {referer}\\r\\nUser-Agent:\\ {USER_AGENT}\\r\\n"
+
+    cmd = [
+        "yt-dlp",
+        "--add-header", f"User-Agent: {USER_AGENT}",
+        "--downloader", "aria2c",
+        "--downloader-args", f"aria2c:{aria2c_args}",
+        "--downloader-args", f"ffmpeg_i:{ffmpeg_i_args}",
+        "--merge-output-format", "mkv",
+        "--force-overwrites",
+        "--no-continue",
+        "-o", "source.mkv",
+        url,
+    ]
+    if referer:
+        cmd[1:1] = ["--add-header", f"Referer: {referer}"]
+
+    run(cmd)
 
 
 def download_streaming(url):
-    print("📡 Streaming platform detected — using yt-dlp", flush=True)
+    print("📡 Streaming platform detected — using yt-dlp + aria2c", flush=True)
     run([
         "yt-dlp",
         "--add-header", f"User-Agent: {USER_AGENT}",
