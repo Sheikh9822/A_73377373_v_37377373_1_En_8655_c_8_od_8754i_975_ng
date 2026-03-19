@@ -90,16 +90,6 @@ jobs:
           key: pip-packages-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
 
       # ─────────────────────────────────────────────────────────────────────
-      # CACHE: yt-dlp standalone binary
-      # ─────────────────────────────────────────────────────────────────────
-      - name: 📦 Cache yt-dlp Binary
-        id: ytdlp-cache
-        uses: actions/cache@v4
-        with:
-          path: /usr/local/bin/yt-dlp
-          key: yt-dlp-standalone-${{ runner.os }}-${{ hashFiles('.github/workflows/encode.yml') }}
-
-      # ─────────────────────────────────────────────────────────────────────
       # CACHE: FFmpeg binary
       # ─────────────────────────────────────────────────────────────────────
       - name: 📦 Cache FFmpeg Binary
@@ -122,32 +112,21 @@ jobs:
       # occurs when a pip-installed yt-dlp script shebang points to a
       # Python interpreter path that no longer exists on the runner.
       # ─────────────────────────────────────────────────────────────────────
-      - name: ⬇️ Install yt-dlp Standalone Binary
-        if: steps.ytdlp-cache.outputs.cache-hit != 'true'
-        run: |
-          curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
-            -o /usr/local/bin/yt-dlp
-          chmod +x /usr/local/bin/yt-dlp
-          echo "✅ yt-dlp $(yt-dlp --version) installed"
-
-      - name: ✅ Verify yt-dlp (cache restore)
-        if: steps.ytdlp-cache.outputs.cache-hit == 'true'
-        run: |
-          chmod +x /usr/local/bin/yt-dlp
-          echo "✅ yt-dlp $(yt-dlp --version) restored from cache"
-
       # ─────────────────────────────────────────────────────────────────────
       # INSTALL: Python library packages (skip if cache hit)
+      # NOTE: yt-dlp installed via pip (not standalone) so it shares the same
+      # Python env and can find pycryptodomex — enables aria2c parallel HLS.
       # ─────────────────────────────────────────────────────────────────────
       - name: 🐍 Install Python Packages
         run: |
           if [ "${{ steps.pip-cache.outputs.cache-hit }}" != "true" ]; then
             echo "📥 Installing Python packages..."
-            pip install --user -r requirements.txt pyrogram tgcrypto pycryptodomex
+            pip install --user -r requirements.txt
           else
             echo "📦 Python packages restored from cache."
           fi
           echo "$HOME/.local/bin" >> $GITHUB_PATH
+          echo "✅ yt-dlp $(yt-dlp --version) ready"
 
       # ─────────────────────────────────────────────────────────────────────
       # INSTALL: FFmpeg (skip if cached)
@@ -215,110 +194,7 @@ jobs:
           YT_COOKIES_B64: ${{ secrets.YT_COOKIES_B64 }}
         run: |
           set -eo pipefail
-          URL="${{ github.event.inputs.video_url }}"
-          CUSTOM="${{ github.event.inputs.custom_name }}"
-
-          # ── Telegram ────────────────────────────────────────────────────
-          if [[ "$URL" == tg_file:* ]] || [[ "$URL" == https://t.me/* ]]; then
-            python3 tg_handler.py 2>&1 | tee download.log
-
-          # ── Magnet (disabled) ────────────────────────────────────────────
-          elif [[ "$URL" == magnet:* ]]; then
-            echo "❌ ERROR: Magnet links are disabled." | tee download.log
-            exit 1
-
-          # ── Streaming platforms / HLS → yt-dlp ──────────────────────────
-          elif [[ "$URL" == *.m3u8* ]] || [[ "$URL" == *m3u8* ]] || \
-               [[ "$URL" == *bilibili.com* ]] || [[ "$URL" == *nicovideo.jp* ]] || \
-               [[ "$URL" == *vimeo.com* ]] || [[ "$URL" == *dailymotion.com* ]] || \
-               [[ "$URL" == *twitch.tv* ]]; then
-
-            # Resolve output filename
-            if [ -z "$CUSTOM" ]; then
-              # Try resolve_filename.py first; fall back to URL basename
-              CLEAN_NAME=$(python3 resolve_filename.py "$URL" 2>/dev/null || \
-                           basename "$URL" | sed 's/\?.*//' | \
-                           python3 -c "import sys,urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))")
-              if [[ "$CLEAN_NAME" != *.mkv ]] && [[ "$CLEAN_NAME" != *.mp4 ]] && [[ "$CLEAN_NAME" != *.webm ]]; then
-                FN="${CLEAN_NAME}.mkv"
-              else
-                FN="$CLEAN_NAME"
-              fi
-            else
-              FN="${CUSTOM}.mkv"
-            fi
-
-            echo "📡 Streaming URL detected — using yt-dlp"
-
-            # ── Auto-detect Referer from CDN domain ──────────────────────────
-            REFERER_ARG=""
-            FFMPEG_HEADERS="-allowed_extensions ALL -extension_picky 0 -protocol_whitelist file,http,https,tcp,tls,crypto"
-            declare -A CDN_REFERER_MAP=(
-              ["uwucdn.top"]="https://kwik.cx/"
-              ["kwik.cx"]="https://kwik.cx/"
-              ["animefever"]="https://animefever.tv/"
-              ["cache.libria.fun"]="https://www.anilibria.tv/"
-              ["delivery.animepahe"]="https://animepahe.ru/"
-              ["moon-cdn"]="https://gogoanime.cl/"
-              ["gogo-cdn"]="https://gogoanime.cl/"
-            )
-            for CDN_DOMAIN in "${!CDN_REFERER_MAP[@]}"; do
-              if [[ "$URL" == *"$CDN_DOMAIN"* ]]; then
-                REFERER="${CDN_REFERER_MAP[$CDN_DOMAIN]}"
-                REFERER_ARG="--referer ${REFERER}"
-                # Pass Referer+UA to ffmpeg so it can fetch the AES key (e.g. mon.key) — key server also checks Referer
-                FFMPEG_HEADERS="-allowed_extensions ALL -extension_picky 0 -protocol_whitelist file,http,https,tcp,tls,crypto -headers Referer:\ ${REFERER}\r\nUser-Agent:\ Mozilla/5.0\r\n"
-                echo "🔗 Auto-detected referer: $REFERER (matched: $CDN_DOMAIN)"
-                break
-              fi
-            done
-
-            yt-dlp \
-              $REFERER_ARG \
-              --add-header "User-Agent:Mozilla/5.0" \
-              --downloader aria2c \
-              --downloader-args "aria2c:-x 16 -s 16 -k 1M --console-log-level=warn --summary-interval=10 --retry-wait=5 --max-tries=10" \
-              --downloader-args "ffmpeg_i:${FFMPEG_HEADERS}" \
-              --merge-output-format mkv \
-              -o "source.mkv" \
-              "$URL" 2>&1 | tee download.log
-
-            echo "$FN" > tg_fname.txt
-
-          # ── Direct CDN / plain file URL → aria2c directly ───────────────
-          else
-            # Resolve output filename
-            if [ -z "$CUSTOM" ]; then
-              CLEAN_NAME=$(python3 resolve_filename.py "$URL" 2>/dev/null || \
-                           basename "$URL" | sed 's/\?.*//' | \
-                           python3 -c "import sys,urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))")
-              if [[ "$CLEAN_NAME" != *.mkv ]] && [[ "$CLEAN_NAME" != *.mp4 ]] && [[ "$CLEAN_NAME" != *.webm ]]; then
-                FN="${CLEAN_NAME}.mkv"
-              else
-                FN="$CLEAN_NAME"
-              fi
-            else
-              FN="${CUSTOM}.mkv"
-            fi
-
-            # Pre-resolve redirects so aria2c gets the clean final URL
-            echo "🔗 Resolving final URL..."
-            FINAL_URL=$(curl -s -o /dev/null -w "%{url_effective}" -L \
-              --user-agent "Mozilla/5.0" "$URL")
-            echo "✅ Resolved: $FINAL_URL"
-
-            echo "📥 Downloading direct: $FINAL_URL"
-            aria2c -x 16 -s 16 -k 1M \
-              --user-agent="Mozilla/5.0" \
-              --console-log-level=warn \
-              --summary-interval=10 \
-              --retry-wait=5 \
-              --max-tries=10 \
-              -o "source.mkv" \
-              "$FINAL_URL" 2>&1 | tee download.log
-
-            echo "$FN" > tg_fname.txt
-          fi
+          python3 download.py 2>&1 | tee download.log
 
       # ─────────────────────────────────────────────────────────────────────
       # STEP 2: ENCODE
@@ -375,46 +251,10 @@ jobs:
           CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           DOWNLOAD_OUTCOME: ${{ steps.download.outcome }}
           ENCODE_OUTCOME: ${{ steps.encode.outcome }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+          UI_TITLE: ${{ github.event.inputs.ui_title || github.event.inputs.custom_name || 'Unknown' }}
         run: |
-          FILE_NAME=$(cat tg_fname.txt 2>/dev/null || echo "${{ github.event.inputs.ui_title || 'Unknown' }}")
-
-          # Determine which step failed and pick its log
-          if [ "$DOWNLOAD_OUTCOME" = "failure" ]; then
-            FAILED_PHASE="DOWNLOAD"
-            LOG_FILE="download.log"
-            PHASE_ICON="📥"
-          elif [ "$ENCODE_OUTCOME" = "failure" ]; then
-            FAILED_PHASE="ENCODE"
-            LOG_FILE="encode.log"
-            PHASE_ICON="⚙️"
-          else
-            FAILED_PHASE="UNKNOWN"
-            LOG_FILE=""
-            PHASE_ICON="❌"
-          fi
-
-          # Get last 30 lines of the relevant log as the error snippet
-          if [ -f "$LOG_FILE" ]; then
-            ERROR_SNIPPET=$(tail -30 "$LOG_FILE")
-          else
-            ERROR_SNIPPET="No log file found for this phase."
-          fi
-
-          # Send failure message
-          MESSAGE=$(printf '<code>┌─── ⚠️ [ MISSION.CRITICAL.FAILURE ] ───┐\n│\n│ 📂 FILE: %s\n│ %s PHASE: %s FAILED\n│ ❌ ERROR DETECTED:\n│ %s\n│\n│ 🛠️ STATUS: Core dumped.\n│ 📑 Full log attached below.\n└────────────────────────────────────┘</code>' \
-            "$FILE_NAME" "$PHASE_ICON" "$FAILED_PHASE" "$(echo "$ERROR_SNIPPET" | tail -5 | tr '\n' ' ')")
-
-          curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-            -H "Content-Type: application/json" \
-            -d "{\"chat_id\": \"${CHAT_ID}\", \"text\": $(echo "$MESSAGE" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'), \"parse_mode\": \"HTML\"}"
-
-          # Send full log file as document
-          if [ -f "$LOG_FILE" ]; then
-            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument" \
-              -F "chat_id=${CHAT_ID}" \
-              -F "document=@${LOG_FILE}" \
-              -F "caption=📋 ${FAILED_PHASE} phase log — Run #${{ github.run_number }}"
-          fi
+          python3 notify_failure.py
 
       # ─────────────────────────────────────────────────────────────────────
       # CACHE SESSION (always, even on failure)
