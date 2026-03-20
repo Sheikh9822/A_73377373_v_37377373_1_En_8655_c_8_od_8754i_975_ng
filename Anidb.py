@@ -508,7 +508,7 @@ def download(url: str) -> None:
 
     # ── 4. Resolve M3U8 ──────────────────────────────────────────────────
     safe_title  = re.sub(r'[<>:"/\\|?*]', '', title).strip()
-    tg_filename = f"(E{ep_num:02d}) {safe_title} (1080p).mkv"
+    tg_filename = f"[E{ep_num:02d}] {safe_title} [1080p].mkv"
 
     print(f"▶ Resolving M3U8...", flush=True)
     msg_id = _notify_start(tg_filename)
