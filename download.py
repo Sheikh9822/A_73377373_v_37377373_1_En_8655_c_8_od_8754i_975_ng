@@ -93,18 +93,43 @@ def download_telegram():
 def download_m3u8(url):
     print("📡 M3U8 detected — ffmpeg sequential download", flush=True)
     referer = detect_referer(url)
+    base_url = url.rsplit("/", 1)[0]
 
-    # ffmpeg sequential is reliable on CDN-protected streams:
-    # - Opens a fresh TCP/TLS connection per segment (harder to IP-ban mid-stream)
-    # - Passes Referer on every request including AES key fetch via -headers
-    # - Proven working on uwucdn.top and similar protected HLS sources
-    # NOTE: headers string must use actual \r\n (CRLF) — same as bash $'...' syntax
+    # Step 1: Fetch manifest via curl
+    print("📄 Fetching manifest...", flush=True)
+    manifest = curl_fetch(url, referer=referer).decode()
+
+    # Step 2: Pre-fetch AES key via curl (CDN blocks ffmpeg's key requests on Azure IPs)
+    # ffmpeg will use the local file instead — bypasses the IP ban on the key endpoint
+    import re as _re
+    key_uri_match = _re.search(r'URI="([^"]+)"', manifest)
+    patched = manifest
+
+    if key_uri_match:
+        key_uri = key_uri_match.group(1)
+        if not key_uri.startswith("http"):
+            key_uri = f"{base_url}/{key_uri}"
+        print(f"🔑 Pre-fetching key via curl: {key_uri}", flush=True)
+        curl_fetch(key_uri, referer=referer, output="/tmp/hls.key")
+        key_size = Path("/tmp/hls.key").stat().st_size
+        if key_size != 16:
+            raise RuntimeError(f"Bad key: {key_size} bytes (expected 16)")
+        print(f"✅ Key saved to /tmp/hls.key", flush=True)
+        # Patch manifest to use local key file
+        patched = manifest.replace(key_uri_match.group(1), "file:///tmp/hls.key")
+
+    Path("/tmp/hls_patched.m3u8").write_text(patched)
+
+    # Step 3: Run ffmpeg on patched manifest — reads key locally, fetches segments remotely
     if referer:
-        headers = f"Referer: {referer}\r\nUser-Agent: Mozilla/5.0\r\n"
+        headers = f"Referer: {referer}
+User-Agent: Mozilla/5.0
+"
     else:
-        headers = "User-Agent: Mozilla/5.0\r\n"
+        headers = "User-Agent: Mozilla/5.0
+"
 
-    cmd = [
+    run([
         "ffmpeg",
         "-headers", headers,
         "-allowed_extensions", "ALL",
@@ -113,12 +138,11 @@ def download_m3u8(url):
         "-reconnect", "1",
         "-reconnect_streamed", "1",
         "-reconnect_delay_max", "5",
-        "-i", url,
+        "-i", "/tmp/hls_patched.m3u8",
         "-c", "copy",
         "source.mkv",
         "-y",
-    ]
-    run(cmd)
+    ])
 
 
 def download_streaming(url):
