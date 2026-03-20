@@ -111,7 +111,7 @@ def download_m3u8(url):
         f"--merge-output-format mkv "
         f"--force-overwrites "
         f"--no-continue "
-        f"-o source.mkv "
+        f"-o source "
         f"'{url}' "
         f"2>&1 | tee download.log"
     )
@@ -119,6 +119,15 @@ def download_m3u8(url):
     result = subprocess.run(cmd, shell=True, executable='/bin/bash')
     if result.returncode != 0:
         raise subprocess.CalledProcessError(result.returncode, cmd)
+
+    # yt-dlp outputs source.mkv when merging — rename if it came out differently
+    import glob as _glob
+    for f in _glob.glob("source.*"):
+        if f != "source.mkv":
+            import os as _os
+            _os.rename(f, "source.mkv")
+            print(f"📦 Renamed {f} → source.mkv", flush=True)
+            break
 
 
 def download_streaming(url):
