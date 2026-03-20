@@ -91,25 +91,28 @@ def download_telegram():
 
 
 def download_m3u8(url):
-    print("📡 M3U8 detected — yt-dlp parallel download", flush=True)
+    print("📡 M3U8 detected — ffmpeg sequential download", flush=True)
     referer = detect_referer(url)
 
-    # Use --concurrent-fragments (yt-dlp native) instead of aria2c
-    # yt-dlp passes --add-header to ALL fragment requests natively
-    # aria2c requires separate header forwarding which is fragile on protected streams
+    # ffmpeg sequential is reliable on CDN-protected streams:
+    # - Opens a fresh TCP/TLS connection per segment (harder to IP-ban mid-stream)
+    # - Passes Referer on every request including AES key fetch via -headers
+    # - Proven working on uwucdn.top and similar protected HLS sources
     cmd = [
-        "yt-dlp",
-        "--add-header", "User-Agent: Mozilla/5.0",
-        "--concurrent-fragments", "16",
-        "--merge-output-format", "mkv",
-        "--force-overwrites",
-        "--no-continue",
-        "-o", "source.mkv",
-        url,
+        "ffmpeg",
+        "-headers", f"Referer: {referer}\r\nUser-Agent: Mozilla/5.0\r\n" if referer
+                    else "User-Agent: Mozilla/5.0\r\n",
+        "-allowed_extensions", "ALL",
+        "-extension_picky", "0",
+        "-protocol_whitelist", "file,http,https,tcp,tls,crypto",
+        "-reconnect", "1",
+        "-reconnect_streamed", "1",
+        "-reconnect_delay_max", "5",
+        "-i", url,
+        "-c", "copy",
+        "source.mkv",
+        "-y",
     ]
-    if referer:
-        cmd = ["yt-dlp", "--add-header", f"Referer: {referer}"] + cmd[1:]
-
     run(cmd)
 
 
