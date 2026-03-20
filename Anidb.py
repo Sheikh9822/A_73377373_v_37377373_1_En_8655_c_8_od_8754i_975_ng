@@ -57,35 +57,59 @@ def _fetch(url: str, headers: dict | None = None, binary: bool = False):
 
 # ─── Telegram Notifications ───────────────────────────────────────────────────
 
-def _tg_send(text: str) -> None:
-    """Fire-and-forget Telegram message (best-effort, never raises)."""
+def _tg_api(endpoint: str, payload: dict) -> dict | None:
+    """
+    Call a Telegram Bot API endpoint.  Returns parsed JSON or None on failure.
+    stdout/stderr suppressed — never leaks into the pipeline log.
+    """
     if not BOT_TOKEN or not CHAT_ID:
-        return
-    import json as _json
-    payload = _json.dumps({
-        "chat_id": CHAT_ID,
-        "text": text,
-        "parse_mode": "HTML",
-    })
+        return None
     try:
-        subprocess.run(
+        data = json.dumps(payload).encode()
+        result = subprocess.run(
             [
                 "curl", "-s", "-X", "POST",
-                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                f"https://api.telegram.org/bot{BOT_TOKEN}/{endpoint}",
                 "-H", "Content-Type: application/json",
-                "-d", payload,
+                "-d", data.decode(),
             ],
             check=False,
             timeout=10,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            capture_output=True,
         )
+        return json.loads(result.stdout.decode()) if result.stdout else None
     except Exception:
-        pass
+        return None
 
 
-def _notify_start(filename: str) -> None:
-    _tg_send(
+def _tg_send_new(text: str) -> int | None:
+    """Send a new message and return its message_id (or None on failure)."""
+    resp = _tg_api("sendMessage", {
+        "chat_id":    CHAT_ID,
+        "text":       text,
+        "parse_mode": "HTML",
+    })
+    try:
+        return resp["result"]["message_id"]
+    except Exception:
+        return None
+
+
+def _tg_edit(msg_id: int, text: str) -> None:
+    """Edit an existing message in-place (best-effort, never raises)."""
+    if not msg_id:
+        return
+    _tg_api("editMessageText", {
+        "chat_id":    CHAT_ID,
+        "message_id": msg_id,
+        "text":       text,
+        "parse_mode": "HTML",
+    })
+
+
+def _notify_start(filename: str) -> int | None:
+    """Send the initial status message and return its message_id."""
+    return _tg_send_new(
         "<code>"
         "┌─── 📥 [ ANIBD.DOWNLOADER ] ────────┐\n"
         "│\n"
@@ -98,12 +122,12 @@ def _notify_start(filename: str) -> None:
     )
 
 
-def _notify_progress(filename: str, ep: int, seg_done: int, seg_total: int,
-                     speed_mbs: float) -> None:
-    pct = (seg_done / seg_total * 100) if seg_total else 0
+def _notify_progress(msg_id: int, filename: str, ep: int,
+                     seg_done: int, seg_total: int, speed_mbs: float) -> None:
+    pct    = (seg_done / seg_total * 100) if seg_total else 0
     filled = int(pct / 100 * 15)
-    bar = "▰" * filled + "▱" * (15 - filled)
-    _tg_send(
+    bar    = "▰" * filled + "▱" * (15 - filled)
+    _tg_edit(msg_id,
         "<code>"
         "┌─── 🛰️ [ ANIBD.DOWNLOAD.ACTIVE ] ───┐\n"
         "│\n"
@@ -118,8 +142,8 @@ def _notify_progress(filename: str, ep: int, seg_done: int, seg_total: int,
     )
 
 
-def _notify_done(filename: str, size_mb: float) -> None:
-    _tg_send(
+def _notify_done(msg_id: int, filename: str, size_mb: float) -> None:
+    _tg_edit(msg_id,
         "<code>"
         "┌─── ✅ [ ANIBD.DOWNLOAD.COMPLETE ] ─┐\n"
         "│\n"
@@ -132,8 +156,8 @@ def _notify_done(filename: str, size_mb: float) -> None:
     )
 
 
-def _notify_error(reason: str) -> None:
-    _tg_send(
+def _notify_error(msg_id: int | None, reason: str) -> None:
+    text = (
         "<code>"
         "┌─── ❌ [ ANIBD.DOWNLOAD.FAILED ] ───┐\n"
         "│\n"
@@ -143,6 +167,10 @@ def _notify_error(reason: str) -> None:
         "└────────────────────────────────────┘"
         "</code>"
     )
+    if msg_id:
+        _tg_edit(msg_id, text)
+    else:
+        _tg_send_new(text)
 
 # ─── URL Parsers ──────────────────────────────────────────────────────────────
 
@@ -322,10 +350,10 @@ def _fetch_m3u8_info(link: str, post_id: str, server_api_id: int = 10) -> dict |
 # ─── Segment Downloader ───────────────────────────────────────────────────────
 
 def _download_segments(info: dict, output_mkv: str, ep_num: int,
-                       tg_filename: str) -> bool:
+                       tg_filename: str, msg_id: int | None) -> bool:
     """
     Download all HLS segments → concatenate → mux into output_mkv via ffmpeg.
-    Sends periodic Telegram progress updates.
+    Edits the single status message for progress updates.
     Cleans up temp files on success or failure.
     """
     seg_dir = Path(f".tmp_anibd_ep{ep_num:02d}")
@@ -336,7 +364,7 @@ def _download_segments(info: dict, output_mkv: str, ep_num: int,
     total     = len(segments)
     bytes_dl  = 0
     start_t   = time.time()
-    last_tg   = 0.0          # last time we sent a TG update
+    last_tg   = time.time()   # initialise to now so first update waits 30s
 
     print(f"  ▶ Downloading {total} segments...", flush=True)
 
@@ -364,7 +392,7 @@ def _download_segments(info: dict, output_mkv: str, ep_num: int,
             elapsed = now - start_t
             if now - last_tg >= 30 and elapsed > 0:
                 speed_mbs = bytes_dl / elapsed / 1_048_576
-                _notify_progress(tg_filename, ep_num, i + 1, total, speed_mbs)
+                _notify_progress(msg_id, tg_filename, ep_num, i + 1, total, speed_mbs)
                 last_tg = now
 
         print(flush=True)
@@ -427,7 +455,7 @@ def download(url: str) -> None:
     else:
         post_id = _parse_anime_url(url)
         if not post_id:
-            _notify_error("Could not extract Post ID from URL.")
+            _notify_error(None, "Could not extract Post ID from URL.")
             print("❌ Could not extract Post ID from anibd.app URL.", flush=True)
             sys.exit(1)
         server_api_id = 10
@@ -445,7 +473,7 @@ def download(url: str) -> None:
     ep_id  = _get_ep_id(post_id)
 
     if not ep_id:
-        _notify_error("Could not find EP_ID on anibd.app page.")
+        _notify_error(None, "Could not find EP_ID on anibd.app page.")
         print("❌ Could not find EP_ID on anibd.app page.", flush=True)
         sys.exit(1)
 
@@ -457,7 +485,7 @@ def download(url: str) -> None:
     servers = _fetch_episode_list(ep_id)
 
     if not servers:
-        _notify_error("No episodes found from anibd.app API.")
+        _notify_error(None, "No episodes found from anibd.app API.")
         print("❌ No episodes found from anibd.app API.", flush=True)
         sys.exit(1)
 
@@ -470,7 +498,7 @@ def download(url: str) -> None:
 
     if ep_num < 1 or ep_num > total_eps:
         msg = f"Episode {ep_num} out of range (1–{total_eps})."
-        _notify_error(msg)
+        _notify_error(None, msg)
         print(f"❌ {msg}", flush=True)
         sys.exit(1)
 
@@ -483,12 +511,12 @@ def download(url: str) -> None:
     tg_filename = f"[E{ep_num:02d}] {safe_title} [1080p].mkv"
 
     print(f"▶ Resolving M3U8...", flush=True)
-    _notify_start(tg_filename)
+    msg_id = _notify_start(tg_filename)
 
     info = _fetch_m3u8_info(link, post_id, server_api_id)
 
     if not info:
-        _notify_error(f"All servers failed for episode {ep_num}.")
+        _notify_error(msg_id, f"All servers failed for episode {ep_num}.")
         print(f"❌ All servers failed for episode {ep_num}.", flush=True)
         sys.exit(1)
 
@@ -500,10 +528,10 @@ def download(url: str) -> None:
     )
 
     # ── 5. Download ───────────────────────────────────────────────────────
-    ok = _download_segments(info, "source.mkv", ep_num, tg_filename)
+    ok = _download_segments(info, "source.mkv", ep_num, tg_filename, msg_id)
 
     if not ok:
-        _notify_error(f"Segment download or mux failed for episode {ep_num}.")
+        _notify_error(msg_id, f"Segment download or mux failed for episode {ep_num}.")
         print("❌ Segment download / mux failed.", flush=True)
         sys.exit(1)
 
@@ -513,7 +541,7 @@ def download(url: str) -> None:
     print(f"📝 tg_fname.txt → {tg_filename}", flush=True)
 
     size_mb = Path("source.mkv").stat().st_size / 1_048_576
-    _notify_done(tg_filename, size_mb)
+    _notify_done(msg_id, tg_filename, size_mb)
     print(f"✅ anibd.app download complete → source.mkv  ({size_mb:.1f} MB)", flush=True)
 
 
