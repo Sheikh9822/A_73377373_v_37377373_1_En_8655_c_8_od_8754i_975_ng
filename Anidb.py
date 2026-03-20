@@ -364,7 +364,7 @@ def _download_segments(info: dict, output_mkv: str, ep_num: int,
     total     = len(segments)
     bytes_dl  = 0
     start_t   = time.time()
-    last_tg   = time.time()   # initialise to now so first update waits 30s
+    last_tg   = -1            # -1 so first segment fires immediately
 
     print(f"  ▶ Downloading {total} segments...", flush=True)
 
@@ -390,7 +390,7 @@ def _download_segments(info: dict, output_mkv: str, ep_num: int,
             # TG progress every 30 seconds
             now = time.time()
             elapsed = now - start_t
-            if now - last_tg >= 30 and elapsed > 0:
+            if (last_tg == -1 or now - last_tg >= 15) and elapsed > 0:
                 speed_mbs = bytes_dl / elapsed / 1_048_576
                 _notify_progress(msg_id, tg_filename, ep_num, i + 1, total, speed_mbs)
                 last_tg = now
@@ -538,6 +538,8 @@ def download(url: str) -> None:
     # ── 6. Write tg_fname.txt (pipeline standard) ─────────────────────────
     with open("tg_fname.txt", "w", encoding="utf-8") as f:
         f.write(tg_filename)
+    # Flag so main.py skips anitopy rename — filename is already final.
+    open("anibd_source.txt", "w").close()
     print(f"📝 tg_fname.txt → {tg_filename}", flush=True)
 
     size_mb = Path("source.mkv").stat().st_size / 1_048_576
