@@ -379,10 +379,15 @@ async def main():
 
         _ui.last_up_pct = -1; _ui.last_up_update = 0; _ui.up_start_time = 0
 
+        _tg_file_name = output_name
+        if len(_tg_file_name) > 64:
+            name, ext = os.path.splitext(_tg_file_name)
+            _tg_file_name = name[:64 - len(ext) - 1].rstrip() + "…" + ext
+
         await app.send_document(
             chat_id=CHAT_ID,
             document=output_name,
-            file_name=output_name,
+            file_name=_tg_file_name,
             thumb=THUMBNAIL if has_thumb else None,
             caption=report,
             parse_mode=enums.ParseMode.HTML,
