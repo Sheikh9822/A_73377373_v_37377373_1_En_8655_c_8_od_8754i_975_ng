@@ -157,7 +157,7 @@ def build_output_name(
     ep_prefix   = "SP" if is_special else "E"
     episode_str = f"{ep_prefix}{int(episode):02d}"
 
-    return f"({season_str}-{episode_str}) {safe_name} ({quality}) ({audio_type}).{ext}"
+    return f"[{season_str}-{episode_str}] {safe_name} [{quality}] [{audio_type}].{ext}"
 
 
 # ---------------------------------------------------------------------------
