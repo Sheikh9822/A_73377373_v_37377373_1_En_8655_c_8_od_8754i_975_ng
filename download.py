@@ -13,6 +13,7 @@ Outputs:
   tg_fname.txt        — human-readable final filename for the encode step
 """
 
+import json
 import os
 import re
 import sys
@@ -23,7 +24,10 @@ import urllib.parse
 # ENV
 # ─────────────────────────────────────────────────────────────────────────────
 URL    = os.environ.get("VIDEO_URL", "").strip()
-CUSTOM = os.environ.get("CUSTOM", "").strip()
+CUSTOM     = os.environ.get("CUSTOM", "").strip()
+BOT_TOKEN  = os.environ.get("TG_BOT_TOKEN", "").strip()
+CHAT_ID    = os.environ.get("TG_CHAT_ID", "").strip()
+RUN_NUMBER = os.environ.get("GITHUB_RUN_NUMBER", "?")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CDN → Referer map  (mirrors the bash associative array)
@@ -122,6 +126,35 @@ def detect_referer(url):
     return None, None
 
 
+
+def notify_download_start(method, output_name):
+    """Send a Telegram message announcing the download has started."""
+    if not BOT_TOKEN or not CHAT_ID:
+        return
+    message = (
+        "<code>"
+        "┌─── 📥 [ DOWNLOAD.INIT ] ───────────────┐\n"
+        "│\n"
+        f"│ 📂 FILE : {output_name}\n"
+        f"│ ⚙️  VIA  : {method}\n"
+        f"│ 🔢 RUN  : #{RUN_NUMBER}\n"
+        "│\n"
+        "│ 🚀 STATUS: Acquiring source...\n"
+        "└────────────────────────────────────┘"
+        "</code>"
+    )
+    payload = json.dumps({"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"})
+    subprocess.run(
+        [
+            "curl", "-s", "-X", "POST",
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            "-H", "Content-Type: application/json",
+            "-d", payload,
+        ],
+        check=False,
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # DOWNLOAD ROUTES
 # ─────────────────────────────────────────────────────────────────────────────
@@ -137,6 +170,7 @@ def download_hls_or_platform():
     output_name = resolve_output_name()
     write_fname(output_name)
 
+    notify_download_start("yt-dlp (HLS/platform)", output_name)
     referer, ffmpeg_headers = detect_referer(URL)
 
     cmd = [
@@ -166,6 +200,7 @@ def download_direct():
     output_name = resolve_output_name()
     write_fname(output_name)
 
+    notify_download_start("aria2c (direct)", output_name)
     # Pre-resolve redirects so aria2c gets the clean final URL
     print("🔗 Resolving final URL...", flush=True)
     resolved = subprocess.check_output(
