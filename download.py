@@ -94,30 +94,31 @@ def download_m3u8(url):
     print("📡 M3U8 detected — yt-dlp + aria2c + ffmpeg key headers", flush=True)
     referer = detect_referer(url)
 
-    # Mirror the working bash approach exactly:
-    # - yt-dlp --referer for manifest/key requests
-    # - aria2c for parallel segment downloads
-    # - ffmpeg_i downloader-args pass Referer to ffmpeg for AES key fetching
+    # Run via bash shell to match working commit behaviour exactly
+    # When run as a Python list, yt-dlp ffmpeg_i arg parsing differs subtly
+    referer_arg = f"--referer '{referer}'" if referer else ""
     ffmpeg_headers = "-allowed_extensions ALL -extension_picky 0 -protocol_whitelist file,http,https,tcp,tls,crypto"
     if referer:
-        ffmpeg_headers += r" -headers Referer:\ " + referer + r"\r\nUser-Agent:\ Mozilla/5.0\r\n"
+        ffmpeg_headers += f" -headers $'Referer: {referer}\\r\\nUser-Agent: Mozilla/5.0\\r\\n'"
 
-    cmd = [
-        "yt-dlp",
-        "--add-header", "User-Agent:Mozilla/5.0",
-        "--downloader", "aria2c",
-        "--downloader-args", "aria2c:-x 16 -s 16 -k 1M --console-log-level=warn --summary-interval=10 --retry-wait=5 --max-tries=10",
-        "--downloader-args", f"ffmpeg_i:{ffmpeg_headers}",
-        "--merge-output-format", "mkv",
-        "--force-overwrites",
-        "--no-continue",
-        "-o", "source.mkv",
-        url,
-    ]
-    if referer:
-        cmd = ["yt-dlp", "--referer", referer] + cmd[1:]
-
-    run(cmd)
+    cmd = (
+        f"yt-dlp "
+        f"{referer_arg} "
+        f"--add-header 'User-Agent:Mozilla/5.0' "
+        f"--downloader aria2c "
+        f"--downloader-args 'aria2c:-x 16 -s 16 -k 1M --console-log-level=warn --summary-interval=10 --retry-wait=5 --max-tries=10' "
+        f"--downloader-args 'ffmpeg_i:{ffmpeg_headers}' "
+        f"--merge-output-format mkv "
+        f"--force-overwrites "
+        f"--no-continue "
+        f"-o source.mkv "
+        f"'{url}' "
+        f"2>&1 | tee download.log"
+    )
+    print(f"$ {cmd}", flush=True)
+    result = subprocess.run(cmd, shell=True, executable='/bin/bash')
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, cmd)
 
 
 def download_streaming(url):
