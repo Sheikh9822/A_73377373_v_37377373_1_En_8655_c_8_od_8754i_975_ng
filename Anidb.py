@@ -40,6 +40,7 @@ RUN_NUMBER = os.environ.get("GITHUB_RUN_NUMBER", "?")
 
 # Episode to download when URL is an anime page (not a direct play link)
 _EPISODE_ENV = os.environ.get("EPISODE", "1").strip()
+_SEASON_ENV  = os.environ.get("SEASON",  "1").strip()
 
 # ─── HTTP Helper ─────────────────────────────────────────────────────────────
 
@@ -508,7 +509,11 @@ def download(url: str) -> None:
 
     # ── 4. Resolve M3U8 ──────────────────────────────────────────────────
     safe_title  = re.sub(r'[<>:"/\\|?*]', '', title).strip()
-    tg_filename = f"[E{ep_num:02d}] {safe_title} [1080p].mkv"
+    try:
+        season_num = max(1, int(_SEASON_ENV))
+    except ValueError:
+        season_num = 1
+    tg_filename = f"[S{season_num:02d}-E{ep_num:02d}] {safe_title} [1080p].mkv"
 
     print(f"▶ Resolving M3U8...", flush=True)
     msg_id = _notify_start(tg_filename)
@@ -538,8 +543,9 @@ def download(url: str) -> None:
     # ── 6. Write tg_fname.txt (pipeline standard) ─────────────────────────
     with open("tg_fname.txt", "w", encoding="utf-8") as f:
         f.write(tg_filename)
-    # Flag so main.py skips anitopy rename — filename is already final.
-    open("anibd_source.txt", "w").close()
+    # No anibd_source.txt flag — main.py will run the normal post-encode
+    # rename pipeline (ffprobe → detect_audio_type → build_output_name)
+    # to append the correct [Dual] / [Sub] / etc. audio tag.
     print(f"📝 tg_fname.txt → {tg_filename}", flush=True)
 
     size_mb = Path("source.mkv").stat().st_size / 1_048_576
