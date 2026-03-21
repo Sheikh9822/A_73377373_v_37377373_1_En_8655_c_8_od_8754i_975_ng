@@ -171,6 +171,41 @@ def download_hls_or_platform():
     notify_download_start("yt-dlp (HLS/platform)", output_name)
     referer, ffmpeg_headers = detect_referer(URL)
 
+    # ── kwik.cx: CF impersonation via yt-dlp, then aria2c with cookies ───────
+    if "kwik.cx" in URL:
+        print("🔓 kwik.cx detected → resolving URL + cookies via yt-dlp...", flush=True)
+        ref = referer or "https://kwik.cx/"
+
+        # Step 1: yt-dlp impersonates CF, saves cookies and resolves direct URL
+        resolved = subprocess.check_output([
+            "yt-dlp",
+            "--get-url",
+            "--extractor-args", "generic:impersonate",
+            "--referer", ref,
+            "--cookies", "cf_cookies.txt",
+            URL,
+        ], text=True).strip().splitlines()[0]
+        print(f"✅ Resolved: {resolved}", flush=True)
+
+        # Step 2: aria2c downloads at full speed using the CF session cookies
+        cmd = [
+            "aria2c",
+            "-x", "16", "-s", "16", "-k", "1M",
+            "--user-agent=Mozilla/5.0",
+            "--console-log-level=warn",
+            "--summary-interval=10",
+            "--retry-wait=5",
+            "--max-tries=10",
+            "--load-cookies=cf_cookies.txt",
+            f"--header=Referer: {ref}",
+            "-o", "source.mkv",
+            resolved,
+        ]
+        print(f"📥 kwik.cx → aria2c + CF cookies  [{output_name}]", flush=True)
+        run(cmd, label="aria2c")
+        return
+
+    # ── HLS / other platforms → yt-dlp + aria2c ──────────────────────────────
     cmd = [
         "yt-dlp",
         "--add-header", "User-Agent:Mozilla/5.0",
