@@ -36,11 +36,6 @@ CDN_REFERER_MAP = {
     "uwucdn.top":          "https://kwik.cx/",
     "owocdn.top":          "https://kwik.cx/",
     "kwik.cx":             "https://kwik.cx/",
-    "animefever":          "https://animefever.tv/",
-    "cache.libria.fun":    "https://www.anilibria.tv/",
-    "delivery.animepahe":  "https://animepahe.ru/",
-    "moon-cdn":            "https://gogoanime.cl/",
-    "gogo-cdn":            "https://gogoanime.cl/",
 }
 
 # Platforms routed through yt-dlp regardless of extension
