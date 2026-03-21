@@ -174,7 +174,7 @@ def download_hls_or_platform():
     cmd = [
         "yt-dlp",
         "--add-header", "User-Agent:Mozilla/5.0",
-        "--extractor-args", "generic:impersonate",
+        "--extractor-args", "generic:impersonate=chrome",
         "--downloader", "aria2c",
         "--downloader-args",
         "aria2c:-x 16 -s 16 -k 1M --console-log-level=warn "
