@@ -45,7 +45,7 @@ YTDLP_DOMAINS = (
     "vimeo.com",
     "dailymotion.com",
     "twitch.tv",
-    "kwik.cx",      # Cloudflare-protected CDN, requires impersonation
+    "kwik.cx",      # Cloudflare-protected CDN, proxied through workers
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -171,21 +171,25 @@ def download_hls_or_platform():
     notify_download_start("yt-dlp (HLS/platform)", output_name)
     referer, ffmpeg_headers = detect_referer(URL)
 
-    # ── kwik.cx: CF requires full yt-dlp session, use concurrent fragments ───
+    # ── kwik.cx: route through CF-bypass proxy, download with aria2c ─────────
     if "kwik.cx" in URL:
         ref = referer or "https://kwik.cx/"
+        proxied = f"https://universal-proxy.cloud-dl.workers.dev/?url={URL}"
+        print(f"🌐 kwik.cx → proxy: {proxied}", flush=True)
         cmd = [
-            "yt-dlp",
-            "--add-header", "User-Agent:Mozilla/5.0",
-            "--extractor-args", "generic:impersonate",
-            "--concurrent-fragments", "16",
-            "--referer", ref,
-            "--merge-output-format", "mkv",
+            "aria2c",
+            "-x", "16", "-s", "16", "-k", "1M",
+            "--user-agent=Mozilla/5.0",
+            "--console-log-level=warn",
+            "--summary-interval=10",
+            "--retry-wait=5",
+            "--max-tries=10",
+            f"--header=Referer: {ref}",
             "-o", "source.mkv",
-            URL,
+            proxied,
         ]
-        print(f"📥 kwik.cx → yt-dlp (16 fragments)  [{output_name}]", flush=True)
-        run(cmd, label="yt-dlp")
+        print(f"📥 kwik.cx → proxy + aria2c  [{output_name}]", flush=True)
+        run(cmd, label="aria2c")
         return
 
     # ── HLS / other platforms → yt-dlp + aria2c ──────────────────────────────
